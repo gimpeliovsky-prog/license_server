@@ -1,0 +1,90 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_client_ip, get_db, get_request_context, rate_limit_activate, rate_limit_refresh
+from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.schemas import ActivateRequest, TokenResponse
+from app.services.auth import create_access_token
+from app.services.license import verify_license_key
+from app.utils.time import utcnow
+
+router = APIRouter(tags=["auth"])
+
+
+@router.post("/activate", response_model=TokenResponse)
+def activate(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    rate_limit_activate(request, payload.company_code)
+
+    tenant = db.query(Tenant).filter(Tenant.company_code == payload.company_code).first()
+    if not tenant or tenant.status != TenantStatus.active:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    now = utcnow()
+    if tenant.subscription_expires_at < now:
+        raise HTTPException(status_code=403, detail="Subscription expired")
+
+    active_keys = (
+        db.query(LicenseKey)
+        .filter(LicenseKey.tenant_id == tenant.id, LicenseKey.status == LicenseKeyStatus.active)
+        .all()
+    )
+    if not active_keys:
+        raise HTTPException(status_code=401, detail="License key invalid")
+
+    matched = any(verify_license_key(payload.license_key, key.hashed_key) for key in active_keys)
+    if not matched:
+        raise HTTPException(status_code=401, detail="License key invalid")
+
+    device = (
+        db.query(Device)
+        .filter(Device.tenant_id == tenant.id, Device.device_id == payload.device_id)
+        .first()
+    )
+    if device and device.revoked:
+        raise HTTPException(status_code=403, detail="Device revoked")
+
+    if not device:
+        device = Device(device_id=payload.device_id, tenant_id=tenant.id, last_seen=now)
+        db.add(device)
+    else:
+        device.last_seen = now
+    db.flush()
+
+    token, token_data = create_access_token(tenant.id, device_id=payload.device_id, issued_at=now)
+
+    db.add(
+        AuditLog(
+            tenant_id=tenant.id,
+            device_id=device.id,
+            action="activate",
+            meta={"ip": get_client_ip(request)},
+        )
+    )
+    db.commit()
+
+    return TokenResponse(
+        access_token=token,
+        issued_at=token_data.issued_at,
+        expires_at=token_data.expires_at,
+        server_time=now,
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(request: Request, context=Depends(get_request_context)) -> TokenResponse:
+    rate_limit_refresh(request)
+
+    if not context.subscription_active:
+        raise HTTPException(status_code=403, detail="Subscription expired")
+
+    now = utcnow()
+    token, token_data = create_access_token(
+        context.tenant.id, device_id=context.token.device_id, issued_at=now
+    )
+
+    return TokenResponse(
+        access_token=token,
+        issued_at=token_data.issued_at,
+        expires_at=token_data.expires_at,
+        server_time=now,
+    )

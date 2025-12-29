@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Tenants</h1>
+
+<div class="panel">
+  <h2>All tenants</h2>
+  {% if tenants %}
+  <table>
+    <thead>
+      <tr>
+        <th>Company code</th>
+        <th>Status</th>
+        <th>Subscription expires</th>
+        <th>ERPNext URL</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tenant in tenants %}
+      <tr>
+        <td>{{ tenant.company_code }}</td>
+        <td>{{ tenant.status.value }}</td>
+        <td>{{ tenant.subscription_expires_at.isoformat() }}</td>
+        <td>{{ tenant.erpnext_url }}</td>
+        <td><a href="/admin-ui/tenants/{{ tenant.company_code }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No tenants created yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Create tenant</h2>
+  <form method="post" action="/admin-ui/tenants">
+    <div class="grid-2">
+      <div>
+        <label>Company code</label>
+        <input type="text" name="company_code" required>
+      </div>
+      <div>
+        <label>ERPNext URL</label>
+        <input type="text" name="erpnext_url" placeholder="https://tenant.kadimasoft.com" required>
+      </div>
+      <div>
+        <label>API key</label>
+        <input type="text" name="api_key" required>
+      </div>
+      <div>
+        <label>API secret</label>
+        <input type="text" name="api_secret" required>
+      </div>
+      <div>
+        <label>Subscription expires (YYYY-MM-DD or ISO)</label>
+        <input type="text" name="subscription_expires_at" placeholder="2025-12-31" required>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          {% for status in statuses %}
+          <option value="{{ status }}">{{ status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit">Create tenant</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

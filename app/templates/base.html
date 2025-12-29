@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Admin" }}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f6f2;
+      --panel: #ffffff;
+      --text: #1c1c1c;
+      --muted: #5b5b5b;
+      --accent: #0f6fff;
+      --danger: #d93025;
+      --border: #e2e2e2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 15% 10%, #ffffff, transparent 45%),
+        radial-gradient(circle at 85% 0%, #e6f0ff, transparent 50%),
+        linear-gradient(120deg, #f6f6f2 0%, #eef3ff 48%, #f6f6f2 100%);
+      color: var(--text);
+    }
+    header {
+      background: #0b2545;
+      color: #ffffff;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header a {
+      color: #ffffff;
+      text-decoration: none;
+      margin-left: 12px;
+      font-size: 14px;
+    }
+    main {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 16px 48px;
+    }
+    h1, h2 {
+      margin-top: 0;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      animation: fadeSlide 0.35s ease both;
+    }
+    .message {
+      border: 1px solid #b7d7b7;
+      background: #f0fff0;
+      color: #215e21;
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    .error {
+      border: 1px solid #f0b4ae;
+      background: #fff1f0;
+      color: var(--danger);
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; }
+    form { margin: 0; }
+    label { display: block; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+    input, select, button {
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 14px;
+      width: 100%;
+    }
+    input[type="checkbox"] { width: auto; }
+    button {
+      background: var(--accent);
+      color: #ffffff;
+      border: none;
+      cursor: pointer;
+    }
+    .button-secondary { background: #667085; }
+    .button-danger { background: var(--danger); }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .inline input, .inline select { width: auto; }
+    .muted { color: var(--muted); }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <strong>KadimaSoft License Admin</strong>
+  </div>
+  {% if is_admin %}
+  <nav>
+    <a href="/admin-ui/tenants">Tenants</a>
+    <a href="/admin-ui/logout">Logout</a>
+  </nav>
+  {% endif %}
+</header>
+<main>
+  {% if message %}<div class="message">{{ message }}</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

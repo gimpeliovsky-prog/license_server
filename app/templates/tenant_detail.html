@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Tenant {{ tenant.company_code }}</h1>
+
+{% if new_license_key %}
+<div class="panel">
+  <strong>New license key (shown once):</strong>
+  <div style="margin-top: 8px; font-family: monospace;">{{ new_license_key }}</div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Tenant details</h2>
+  <table>
+    <tbody>
+      <tr><th>Company code</th><td>{{ tenant.company_code }}</td></tr>
+      <tr><th>Status</th><td>{{ tenant.status.value }}</td></tr>
+      <tr><th>Subscription expires</th><td>{{ tenant.subscription_expires_at.isoformat() }}</td></tr>
+      <tr><th>ERPNext URL</th><td>{{ tenant.erpnext_url }}</td></tr>
+      <tr><th>ERP credentials</th><td class="muted">Stored in DB</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Update status</h2>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/status" class="inline">
+    <select name="status">
+      {% for status in tenant_statuses %}
+      <option value="{{ status }}" {% if status == tenant.status.value %}selected{% endif %}>{{ status }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Update</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Update subscription</h2>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/subscription">
+    <div class="grid-2">
+      <div>
+        <label>Set expires at (YYYY-MM-DD or ISO)</label>
+        <input type="text" name="expires_at" placeholder="2025-12-31">
+      </div>
+      <div>
+        <label>Add days</label>
+        <input type="number" name="add_days" min="1" max="3650" placeholder="30">
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit">Update subscription</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Create license key</h2>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/licenses">
+    <div class="grid-2">
+      <div>
+        <label>Custom license key (optional)</label>
+        <input type="text" name="license_key" placeholder="leave empty to auto-generate">
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          {% for status in license_statuses %}
+          <option value="{{ status }}">{{ status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit">Create license</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>License keys</h2>
+  {% if licenses %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Status</th>
+        <th>Created at</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for key in licenses %}
+      <tr>
+        <td style="font-family: monospace;">{{ key.id }}</td>
+        <td>{{ key.status.value }}</td>
+        <td>{{ key.created_at.isoformat() }}</td>
+        <td>
+          <form method="post" action="/admin-ui/licenses/{{ key.id }}/status" class="inline">
+            <input type="hidden" name="company_code" value="{{ tenant.company_code }}">
+            <select name="status">
+              {% for status in license_statuses %}
+              <option value="{{ status }}" {% if status == key.status.value %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No license keys.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Devices</h2>
+  {% if devices %}
+  <table>
+    <thead>
+      <tr>
+        <th>Device ID</th>
+        <th>Revoked</th>
+        <th>Last seen</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for device in devices %}
+      <tr>
+        <td>{{ device.device_id }}</td>
+        <td>{{ device.revoked }}</td>
+        <td>{% if device.last_seen %}{{ device.last_seen.isoformat() }}{% else %}-{% endif %}</td>
+        <td>
+          {% if device.revoked %}
+          <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
+            <input type="hidden" name="revoked" value="false">
+            <button type="submit" class="button-secondary">Unrevoke</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
+            <input type="hidden" name="revoked" value="true">
+            <button type="submit" class="button-danger">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No devices.</p>
+  {% endif %}
+</div>
+{% endblock %}
