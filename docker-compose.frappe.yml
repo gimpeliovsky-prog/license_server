@@ -1,0 +1,73 @@
+services:
+  license_db:
+    image: postgres:15
+    container_name: license_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-license_server}
+      POSTGRES_USER: ${POSTGRES_USER:-license_server}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - license_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - license_internal
+
+  license_api:
+    build:
+      context: .
+    container_name: license_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    working_dir: /app
+    environment:
+      # IMPORTANT: inside Docker this must be the service name, NOT localhost
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
+
+      # Allow HTTP because we removed nginx/tls in this compose
+      ALLOW_INSECURE_HTTP: "true"
+
+      # Fix alembic import "No module named app"
+      PYTHONPATH: /app
+
+      # Optional quality-of-life
+      PYTHONUNBUFFERED: "1"
+
+      # (Optional but recommended) also provide DB_* in case the app reads these
+      DB_HOST: license_db
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-license_server}
+      DB_USER: ${POSTGRES_USER:-license_server}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+
+    depends_on:
+      license_db:
+        condition: service_healthy
+
+    # OPEN PORT FOR HOST
+    expose:
+      - "8000"
+
+    # Force correct process (avoid "python3" exit loop)
+    entrypoint: []
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+    networks:
+      frappe_network:
+        aliases:
+          - license-api
+      license_internal: {}
+
+networks:
+  frappe_network:
+    external: true
+  license_internal:
+    internal: true
+
+volumes:
+  license_db_data:
