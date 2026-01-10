@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from app.db import SessionLocal
 from app.models import Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
-from app.services.license import hash_license_key
+from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
 
@@ -143,10 +143,15 @@ def create_license(db, company_code: str, key: str | None, status: str) -> int:
     if not tenant:
         print("Tenant not found")
         return 1
-    license_key = key or secrets.token_urlsafe(32)
+    license_key = (key or secrets.token_urlsafe(32)).strip()
+    if not license_key:
+        print("License key invalid")
+        return 1
+    fingerprint = fingerprint_license_key(license_key) or None
     license_entry = LicenseKey(
         tenant_id=tenant.id,
         hashed_key=hash_license_key(license_key),
+        fingerprint=fingerprint,
         status=LicenseKeyStatus(status),
     )
     db.add(license_entry)

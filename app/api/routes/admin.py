@@ -18,7 +18,7 @@ from app.schemas import (
     TenantResponse,
     TenantStatusUpdateRequest,
 )
-from app.services.license import hash_license_key
+from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -141,11 +141,15 @@ def list_licenses(company_code: str, db: Session = Depends(get_db)) -> list[Lice
 @router.post("/licenses", response_model=LicenseResponse, status_code=201)
 def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db)) -> LicenseResponse:
     tenant = get_tenant_or_404(db, payload.company_code)
-    license_key = payload.license_key or secrets.token_urlsafe(32)
+    license_key = (payload.license_key or secrets.token_urlsafe(32)).strip()
+    if not license_key:
+        raise HTTPException(status_code=400, detail="License key invalid")
+    fingerprint = fingerprint_license_key(license_key) or None
 
     license_entry = LicenseKey(
         tenant_id=tenant.id,
         hashed_key=hash_license_key(license_key),
+        fingerprint=fingerprint,
         status=parse_license_status(payload.status),
     )
     db.add(license_entry)

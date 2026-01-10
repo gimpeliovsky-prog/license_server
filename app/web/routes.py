@@ -25,7 +25,7 @@ from app.services.allowlist import (
     normalize_method,
     seed_allowlist_from_settings,
 )
-from app.services.license import hash_license_key
+from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
@@ -341,9 +341,11 @@ async def create_license(request: Request, company_code: str, db: Session = Depe
         return redirect_to(f"/admin-ui/tenants/{company_code}")
 
     license_key = license_key_raw or secrets.token_urlsafe(32)
+    fingerprint = fingerprint_license_key(license_key) or None
     license_entry = LicenseKey(
         tenant_id=tenant.id,
         hashed_key=hash_license_key(license_key),
+        fingerprint=fingerprint,
         status=status,
     )
     db.add(license_entry)

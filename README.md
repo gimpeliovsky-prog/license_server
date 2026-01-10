@@ -1,62 +1,91 @@
 # KadimaSoft License Server
 
-Самостоятельный лиценз-сервер для Android приложения KadimaSoft с прокси к ERPNext.
+FastAPI license server + PostgreSQL для ERPNext/Android. Есть два режима запуска:
+- `frappe_network` (рекомендуется, если ERPNext уже работает в Docker; без nginx внутри compose)
+- standalone compose с опциональным nginx для HTTPS
 
-## Стек
-- FastAPI + SQLAlchemy + Alembic
-- Postgres
-- PyJWT + bcrypt
-- Docker Compose
-- Nginx + Certbot (опционально, для HTTPS)
+---
 
-## Как устроено лицензирование
-- Каждый клиент = отдельный tenant (company_code + erpnext_url).
-- У каждого tenant своя подписка (subscription_expires_at) и свои license keys.
-- Лицензия хранится только в виде хэша (bcrypt).
-- Токен живет 7 дней, оффлайн допускается до 7 дней.
-- Unlimited devices, но устройства можно отзывать.
+## Архитектура
 
-## Подготовка .env
-1) Скопируй шаблон и поправь значения:
+- `license_api` - FastAPI (uvicorn) на порту `8000`
+- `license_db` - PostgreSQL
+- Сети:
+  - `license_internal` (private): `license_api` <-> `license_db`
+  - `frappe_network` (external): общий доступ для ERPNext/Frappe
 
+В сети `frappe_network` API доступен как `license-api` (network alias).
+
+---
+
+## Вариант A: ERPNext/Frappe network (docker-compose.frappe.yml)
+
+1) Создайте внешнюю сеть (если нет):
 ```bash
+docker network create frappe_network || true
+```
+
+2) Создайте `.env`:
+```powershell
+# Windows (PowerShell)
+copy .env.example .env
+```
+```bash
+# Linux/macOS
 cp .env.example .env
 ```
 
-2) Обязательно поменяй:
+3) Заполните обязательные секреты:
 - `JWT_SECRET`
 - `ADMIN_TOKEN`
 - `SESSION_SECRET`
-- `LE_EMAIL` (для Let's Encrypt)
-- `LE_DOMAIN` = `license.kadimasoft.com`
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
 
-## Развертывание в Docker
+4) Запустите сервисы:
+```bash
+docker compose -f docker-compose.frappe.yml up -d --build
+```
 
-### Вариант A - без HTTPS (dev)
-1) В `.env` поставь `ALLOW_INSECURE_HTTP=true`.
-2) Запусти:
+5) Примените миграции:
+```bash
+docker compose -f docker-compose.frappe.yml exec -w /app license_api sh -lc \
+  'export PYTHONPATH=/app; alembic upgrade head'
+```
 
+6) Доступ:
+- Из контейнеров `frappe_network`: `http://license-api:8000`
+- Для доступа с хоста добавьте `ports: "8000:8000"` или проксируйте через свой nginx.
+
+---
+
+## Вариант B: локальный dev (docker-compose.yml, без nginx)
+
+1) `.env` как выше + `ALLOW_INSECURE_HTTP=true`.
+2) Запуск:
 ```bash
 docker compose up -d --build
 ```
 
 URL:
-- `http://localhost:8000`
 - `http://localhost:8000/admin-ui/login`
+- `http://localhost:8000/docs`
 
-### Вариант B - HTTPS self-signed (dev)
-1) Сгенерируй сертификаты:
+---
 
-```bash
+## Вариант C: HTTPS через nginx
+
+### Self-signed (dev)
+1) Сгенерируйте сертификат:
+```powershell
 # Windows (PowerShell)
 scripts\generate_self_signed_cert.ps1 -Domain localhost
-
+```
+```bash
 # Linux/macOS
 ./scripts/generate_self_signed_cert.sh localhost
 ```
 
-2) Запусти:
-
+2) Запуск:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.selfsigned.yml up -d --build
 ```
@@ -64,28 +93,25 @@ docker compose -f docker-compose.yml -f docker-compose.selfsigned.yml up -d --bu
 URL:
 - `https://localhost/admin-ui/login`
 
-### Вариант C - HTTPS Let's Encrypt + авто-продление (prod)
-1) Проверь, что DNS указывает на сервер, порты 80/443 открыты.
-2) В `.env` задай:
-
+### Let's Encrypt (prod)
+1) В `.env`:
 ```
 LE_DOMAIN=license.kadimasoft.com
 LE_EMAIL=admin@kadimasoft.com
 ALLOW_INSECURE_HTTP=false
 ```
 
-3) Один раз запроси сертификат:
-
-```bash
+2) Инициализация сертификата:
+```powershell
 # Windows (PowerShell)
 scripts\letsencrypt_init.ps1 -Domain license.kadimasoft.com -Email admin@kadimasoft.com
-
+```
+```bash
 # Linux/macOS
 ./scripts/letsencrypt_init.sh license.kadimasoft.com admin@kadimasoft.com
 ```
 
-4) Запусти полный стек:
-
+3) Запуск:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.letsencrypt.yml up -d --build
 ```
@@ -93,53 +119,23 @@ docker compose -f docker-compose.yml -f docker-compose.letsencrypt.yml up -d --b
 URL:
 - `https://license.kadimasoft.com/admin-ui/login`
 
-Certbot автоматически обновляет сертификаты каждые 12 часов.
+---
 
-### Вариант D - в сети frappe_network (без nginx)
-Подходит, если ERPNext/Frappe и license server живут в одной docker сети и доступ нужны только контейнерам.
+## Admin UI и ERP allowlist
 
-1) Создай внешнюю сеть (если ее нет):
+- Вход: `/admin-ui/login` (используйте `ADMIN_TOKEN` из `.env`).
+- Управление tenants и license keys.
+- Страница `/admin-ui/erp-allowlist`:
+  - добавление разрешенных doctypes и HTTP-методов
+  - кнопка "Load defaults into DB" грузит значения из `.env`
+  - если в БД нет записей, сервер использует `.env` (`ERP_ALLOWED_DOCTYPES`, `ERP_ALLOWED_METHODS`)
 
-```bash
-docker network create frappe_network || true
-```
+---
 
-2) Запусти:
-
-```bash
-docker compose -f docker-compose.frappe.yml up -d --build
-```
-
-По умолчанию порт 8000 не публикуется на хост. Если нужен доступ с хоста, добавь `ports: ["8000:8000"]` в `license_api`.
-
-### Прогон миграций
-После первого старта:
+## CLI (скрипты админа)
 
 ```bash
-docker compose exec api alembic upgrade head
-```
-
-Для варианта frappe:
-
-```bash
-docker compose -f docker-compose.frappe.yml exec -w /app license_api sh -lc \
-  'export PYTHONPATH=/app; alembic upgrade head'
-```
-
-## Администрирование (ручное управление лицензиями)
-Да, можно полностью управлять лицензиями вручную - через CLI или через Admin UI / Admin API.
-
-### Admin UI (FastAPI + Jinja)
-- Открывай `https://license.kadimasoft.com/admin-ui/login` (или `http://SERVER_IP:8000/admin-ui/login` если порт проброшен)
-- Вводи `ADMIN_TOKEN`
-- Создавай tenants, ключи лицензий, продлевай подписки, блокируй устройства
-- Управляй ERP allowlist на странице `ERP Allowlist`
-
-### CLI (консоль)
-Примеры:
-
-```bash
-# создать tenant
+# Создать tenant
 docker compose exec api python scripts/license_admin.py create-tenant \
   --company-code menor \
   --erpnext-url https://menor.kadimasoft.com \
@@ -147,47 +143,38 @@ docker compose exec api python scripts/license_admin.py create-tenant \
   --api-secret ERP_API_SECRET \
   --subscription-expires-at 2025-12-31
 
-# создать ключ лицензии
+# Создать license key
 docker compose exec api python scripts/license_admin.py create-license --company-code menor
 
-# продлить подписку
+# Продлить подписку
 docker compose exec api python scripts/license_admin.py add-days --company-code menor --days 30
 
-# приостановить tenant
+# Изменить статус tenant
 docker compose exec api python scripts/license_admin.py set-status --company-code menor --status suspended
 
-# список устройств и отзыв
+# Список устройств и отзыв
 docker compose exec api python scripts/license_admin.py list-devices --company-code menor
 docker compose exec api python scripts/license_admin.py revoke-device --company-code menor --device-id DEVICE123
 ```
 
-### Admin API (token-protected)
-Все запросы требуют `X-Admin-Token`.
+Для `docker-compose.frappe.yml` замените сервис `api` на `license_api`.
 
-```bash
-curl -H "X-Admin-Token: YOUR_ADMIN_TOKEN" https://license.kadimasoft.com/admin/tenants
-curl -H "X-Admin-Token: YOUR_ADMIN_TOKEN" -X POST https://license.kadimasoft.com/admin/tenants \
-  -H "Content-Type: application/json" \
-  -d '{"company_code":"menor","erpnext_url":"https://menor.kadimasoft.com","api_key":"KEY","api_secret":"SECRET","subscription_expires_at":"2025-12-31T23:59:59Z","status":"active"}'
-```
-
-## ERP allowlist
-- Если таблица allowlist пустая, используются `ERP_ALLOWED_DOCTYPES` и `ERP_ALLOWED_METHODS` из `.env`.
-- Чтобы управлять allowlist без правки `.env`, используй страницу `ERP Allowlist` в Admin UI.
-- Кнопка `Load defaults into DB` переносит значения из `.env` в базу.
+---
 
 ## API overview
-- `POST /activate` -> выдает токен (7 дней)
-- `POST /refresh` -> обновляет токен
-- `GET /status` -> статус подписки
-- ERPNext прокси: `/picklists`, `/items`, `/bin`, `/resource/{doctype}`
 
-## Примечания
-- Если запросы идут без HTTPS, ставь `ALLOW_INSECURE_HTTP=true`.
-- Для продакшена обязательно HTTPS.
-- Универсальный прокси ограничен whitelist: `ERP_ALLOWED_DOCTYPES`, методы регулируются через `ERP_ALLOWED_METHODS`.
+- `POST /activate` — активация лицензии (привязка устройства)
+- `POST /refresh` — продление токена
+- `GET /status` — статус лицензии/устройства
+- ERPNext proxy: `/picklists`, `/items`, `/bin`, `/resource/{doctype}`
 
-## Tests
+---
+
+## Notes
+
+- Храните секреты в `.env`, не коммитьте их.
+- Если пароль БД содержит спецсимволы, используйте `POSTGRES_*` или URL-encode в `DATABASE_URL`.
+- Тесты:
 ```bash
 docker compose exec api pytest
 ```

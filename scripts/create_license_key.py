@@ -4,7 +4,7 @@ import sys
 
 from app.db import SessionLocal
 from app.models import LicenseKey, LicenseKeyStatus, Tenant
-from app.services.license import hash_license_key
+from app.services.license import fingerprint_license_key, hash_license_key
 
 
 def main() -> int:
@@ -14,7 +14,11 @@ def main() -> int:
     parser.add_argument("--status", default=LicenseKeyStatus.active.value, choices=[s.value for s in LicenseKeyStatus])
     args = parser.parse_args()
 
-    license_key = args.key or secrets.token_urlsafe(32)
+    license_key = (args.key or secrets.token_urlsafe(32)).strip()
+    if not license_key:
+        print("License key invalid")
+        return 1
+    fingerprint = fingerprint_license_key(license_key) or None
 
     db = SessionLocal()
     try:
@@ -26,6 +30,7 @@ def main() -> int:
         license_entry = LicenseKey(
             tenant_id=tenant.id,
             hashed_key=hash_license_key(license_key),
+            fingerprint=fingerprint,
             status=LicenseKeyStatus(args.status),
         )
         db.add(license_entry)
