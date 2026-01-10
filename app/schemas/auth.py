@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field
 
 
 class ActivateRequest(BaseModel):
-    company_code: str = Field(..., min_length=1, max_length=64)
     license_key: str = Field(..., min_length=8, max_length=256)
     device_id: str = Field(..., min_length=1, max_length=128)
+    company_code: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class TokenResponse(BaseModel):

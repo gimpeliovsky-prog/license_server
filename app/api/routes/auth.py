@@ -13,27 +13,50 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/activate", response_model=TokenResponse)
 def activate(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
-    rate_limit_activate(request, payload.company_code)
-
-    tenant = db.query(Tenant).filter(Tenant.company_code == payload.company_code).first()
-    if not tenant or tenant.status != TenantStatus.active:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    rate_limit_key = payload.company_code or f"license:{payload.license_key}"
+    rate_limit_activate(request, rate_limit_key)
 
     now = utcnow()
-    if tenant.subscription_expires_at < now:
-        raise HTTPException(status_code=403, detail="Subscription expired")
+    tenant: Tenant | None = None
 
-    active_keys = (
-        db.query(LicenseKey)
-        .filter(LicenseKey.tenant_id == tenant.id, LicenseKey.status == LicenseKeyStatus.active)
-        .all()
-    )
-    if not active_keys:
-        raise HTTPException(status_code=401, detail="License key invalid")
+    if payload.company_code:
+        tenant = db.query(Tenant).filter(Tenant.company_code == payload.company_code).first()
+        if not tenant or tenant.status != TenantStatus.active:
+            raise HTTPException(status_code=404, detail="Tenant not found")
 
-    matched = any(verify_license_key(payload.license_key, key.hashed_key) for key in active_keys)
-    if not matched:
-        raise HTTPException(status_code=401, detail="License key invalid")
+        if tenant.subscription_expires_at < now:
+            raise HTTPException(status_code=403, detail="Subscription expired")
+
+        active_keys = (
+            db.query(LicenseKey)
+            .filter(LicenseKey.tenant_id == tenant.id, LicenseKey.status == LicenseKeyStatus.active)
+            .all()
+        )
+        if not active_keys:
+            raise HTTPException(status_code=401, detail="License key invalid")
+
+        matched = any(verify_license_key(payload.license_key, key.hashed_key) for key in active_keys)
+        if not matched:
+            raise HTTPException(status_code=401, detail="License key invalid")
+    else:
+        active_keys = (
+            db.query(LicenseKey)
+            .filter(LicenseKey.status == LicenseKeyStatus.active)
+            .all()
+        )
+        matched_key = next(
+            (key for key in active_keys if verify_license_key(payload.license_key, key.hashed_key)),
+            None,
+        )
+        if not matched_key:
+            raise HTTPException(status_code=401, detail="License key invalid")
+
+        tenant = matched_key.tenant
+        if not tenant or tenant.status != TenantStatus.active:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        if tenant.subscription_expires_at < now:
+            raise HTTPException(status_code=403, detail="Subscription expired")
 
     device = (
         db.query(Device)

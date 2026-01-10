@@ -5,11 +5,26 @@ from datetime import date, datetime, time, timedelta, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.config import get_settings
-from app.models import Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.models import (
+    Device,
+    ERPAllowlistEntry,
+    ERPAllowlistType,
+    LicenseKey,
+    LicenseKeyStatus,
+    Tenant,
+    TenantStatus,
+)
+from app.services.allowlist import (
+    has_allowlist_entries,
+    normalize_doctype,
+    normalize_method,
+    seed_allowlist_from_settings,
+)
 from app.services.license import hash_license_key
 from app.utils.time import utcnow
 
@@ -399,3 +414,152 @@ async def update_device(request: Request, company_code: str, device_id: str, db:
     db.commit()
     set_flash(request, message="Device updated")
     return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+
+@router.get("/erp-allowlist")
+def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    doctypes = (
+        db.query(ERPAllowlistEntry)
+        .filter(ERPAllowlistEntry.entry_type == ERPAllowlistType.doctype)
+        .order_by(ERPAllowlistEntry.value.asc())
+        .all()
+    )
+    methods = (
+        db.query(ERPAllowlistEntry)
+        .filter(ERPAllowlistEntry.entry_type == ERPAllowlistType.method)
+        .order_by(ERPAllowlistEntry.value.asc())
+        .all()
+    )
+
+    message, error, _ = pop_flash(request)
+    context = {
+        "request": request,
+        "title": "ERP Allowlist",
+        "doctypes": doctypes,
+        "methods": methods,
+        "defaults_doctypes": settings.erp_allowed_doctypes,
+        "defaults_methods": settings.erp_allowed_methods,
+        "message": message,
+        "error": error,
+        "is_admin": True,
+    }
+    return templates.TemplateResponse("erp_allowlist.html", context)
+
+
+@router.post("/erp-allowlist/seed")
+async def seed_allowlist(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    if has_allowlist_entries(db):
+        set_flash(request, error="Allowlist already has entries")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    seed_allowlist_from_settings(db)
+    if has_allowlist_entries(db):
+        set_flash(request, message="Defaults loaded into allowlist")
+    else:
+        set_flash(request, error="No defaults configured in .env")
+    return redirect_to("/admin-ui/erp-allowlist")
+
+
+@router.post("/erp-allowlist/doctypes")
+async def add_allowlist_doctype(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    raw_value = str(form.get("value") or "")
+    value = normalize_doctype(raw_value)
+    if not value:
+        set_flash(request, error="Doctype is required")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    if not has_allowlist_entries(db):
+        seed_allowlist_from_settings(db)
+
+    existing = (
+        db.query(ERPAllowlistEntry)
+        .filter(ERPAllowlistEntry.entry_type == ERPAllowlistType.doctype)
+        .all()
+    )
+    if any(entry.value.lower() == value.lower() for entry in existing):
+        set_flash(request, error="Doctype already exists")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    db.add(ERPAllowlistEntry(entry_type=ERPAllowlistType.doctype, value=value))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        set_flash(request, error="Doctype already exists")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    set_flash(request, message="Doctype added")
+    return redirect_to("/admin-ui/erp-allowlist")
+
+
+@router.post("/erp-allowlist/methods")
+async def add_allowlist_method(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    raw_value = str(form.get("value") or "")
+    value = normalize_method(raw_value)
+    if not value:
+        set_flash(request, error="Method is required")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    if not has_allowlist_entries(db):
+        seed_allowlist_from_settings(db)
+
+    existing = (
+        db.query(ERPAllowlistEntry)
+        .filter(ERPAllowlistEntry.entry_type == ERPAllowlistType.method)
+        .all()
+    )
+    if any(entry.value.upper() == value for entry in existing):
+        set_flash(request, error="Method already exists")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    db.add(ERPAllowlistEntry(entry_type=ERPAllowlistType.method, value=value))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        set_flash(request, error="Method already exists")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    set_flash(request, message="Method added")
+    return redirect_to("/admin-ui/erp-allowlist")
+
+
+@router.post("/erp-allowlist/{entry_id}/delete")
+async def delete_allowlist_entry(request: Request, entry_id: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    try:
+        entry_uuid = uuid.UUID(entry_id)
+    except ValueError:
+        set_flash(request, error="Invalid allowlist entry id")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    entry = db.query(ERPAllowlistEntry).filter(ERPAllowlistEntry.id == entry_uuid).first()
+    if not entry:
+        set_flash(request, error="Allowlist entry not found")
+        return redirect_to("/admin-ui/erp-allowlist")
+
+    db.delete(entry)
+    db.commit()
+    set_flash(request, message="Allowlist entry deleted")
+    return redirect_to("/admin-ui/erp-allowlist")

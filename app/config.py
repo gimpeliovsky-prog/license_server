@@ -1,7 +1,23 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _parse_csv_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                items.append(text)
+        return items
+    text = str(value).strip()
+    return [text] if text else []
 
 
 class Settings(BaseSettings):
@@ -20,6 +36,32 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     admin_token: str | None = Field(default=None, alias="ADMIN_TOKEN")
     session_secret: str | None = Field(default=None, alias="SESSION_SECRET")
+    erp_allowed_doctypes: list[str] = Field(
+        default_factory=lambda: [
+            "Pick List",
+            "Item",
+            "Bin",
+            "Warehouse",
+            "Customer",
+            "Purchase Order",
+            "Stock Settings",
+        ],
+        alias="ERP_ALLOWED_DOCTYPES",
+    )
+    erp_allowed_methods: list[str] = Field(
+        default_factory=lambda: ["GET", "POST", "PUT"],
+        alias="ERP_ALLOWED_METHODS",
+    )
+
+    @field_validator("erp_allowed_doctypes", mode="before")
+    @classmethod
+    def parse_erp_allowed_doctypes(cls, value: object) -> list[str]:
+        return _parse_csv_list(value)
+
+    @field_validator("erp_allowed_methods", mode="before")
+    @classmethod
+    def parse_erp_allowed_methods(cls, value: object) -> list[str]:
+        return [item.upper() for item in _parse_csv_list(value)]
 
 
 @lru_cache

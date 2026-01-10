@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>ERP Allowlist</h1>
+
+<div class="panel">
+  <h2>Doctypes</h2>
+  <form method="post" action="/admin-ui/erp-allowlist/doctypes">
+    <div class="inline">
+      <input type="text" name="value" placeholder="Pick List" required>
+      <button type="submit">Add doctype</button>
+    </div>
+  </form>
+  {% if doctypes %}
+  <table>
+    <thead>
+      <tr>
+        <th>Doctype</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in doctypes %}
+      <tr>
+        <td>{{ entry.value }}</td>
+        <td>{{ entry.created_at.isoformat() }}</td>
+        <td>
+          <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
+            <button class="button-danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No doctypes configured.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Methods</h2>
+  <form method="post" action="/admin-ui/erp-allowlist/methods">
+    <div class="inline">
+      <input type="text" name="value" placeholder="GET" required>
+      <button type="submit">Add method</button>
+    </div>
+  </form>
+  {% if methods %}
+  <table>
+    <thead>
+      <tr>
+        <th>Method</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in methods %}
+      <tr>
+        <td>{{ entry.value }}</td>
+        <td>{{ entry.created_at.isoformat() }}</td>
+        <td>
+          <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
+            <button class="button-danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No methods configured.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Defaults</h2>
+  <p class="muted">
+    If the allowlist is empty, the proxy uses ERP_ALLOWED_DOCTYPES and ERP_ALLOWED_METHODS from .env.
+  </p>
+  <form method="post" action="/admin-ui/erp-allowlist/seed">
+    <button class="button-secondary" type="submit">Load defaults into DB</button>
+  </form>
+  {% if defaults_doctypes or defaults_methods %}
+  <div class="grid-2" style="margin-top: 12px;">
+    <div>
+      <label>Default doctypes</label>
+      <div class="muted">{{ defaults_doctypes | join(", ") }}</div>
+    </div>
+    <div>
+      <label>Default methods</label>
+      <div class="muted">{{ defaults_methods | join(", ") }}</div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

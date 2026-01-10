@@ -114,6 +114,7 @@ docker compose exec api alembic upgrade head
 - Открывай `https://license.kadimasoft.com/admin-ui/login`
 - Вводи `ADMIN_TOKEN`
 - Создавай tenants, ключи лицензий, продлевай подписки, блокируй устройства
+- Управляй ERP allowlist на странице `ERP Allowlist`
 
 ### CLI (консоль)
 Примеры:
@@ -155,11 +156,12 @@ curl -H "X-Admin-Token: YOUR_ADMIN_TOKEN" -X POST https://license.kadimasoft.com
 - `POST /activate` -> выдаёт токен (7 дней)
 - `POST /refresh` -> обновляет токен
 - `GET /status` -> статус подписки
-- ERPNext прокси: `/picklists`, `/items`, `/bin`
+- ERPNext прокси: `/picklists`, `/items`, `/bin`, `/resource/{doctype}`
 
 ## Примечания
 - Если запросы идут без HTTPS, ставь `ALLOW_INSECURE_HTTP=true`.
 - Для продакшена обязательно HTTPS.
+- Универсальный прокси ограничен whitelist: `ERP_ALLOWED_DOCTYPES`, методы регулируются через `ERP_ALLOWED_METHODS`.
 
 ## Tests
 ```bash
