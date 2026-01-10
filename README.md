@@ -1,6 +1,6 @@
-﻿# KadimaSoft License Server
+# KadimaSoft License Server
 
-Самостоятельный лиценз‑сервер для Android приложения KadimaSoft с прокси к ERPNext.
+Самостоятельный лиценз-сервер для Android приложения KadimaSoft с прокси к ERPNext.
 
 ## Стек
 - FastAPI + SQLAlchemy + Alembic
@@ -13,7 +13,7 @@
 - Каждый клиент = отдельный tenant (company_code + erpnext_url).
 - У каждого tenant своя подписка (subscription_expires_at) и свои license keys.
 - Лицензия хранится только в виде хэша (bcrypt).
-- Токен живёт 7 дней, оффлайн допускается до 7 дней.
+- Токен живет 7 дней, оффлайн допускается до 7 дней.
 - Unlimited devices, но устройства можно отзывать.
 
 ## Подготовка .env
@@ -30,14 +30,9 @@ cp .env.example .env
 - `LE_EMAIL` (для Let's Encrypt)
 - `LE_DOMAIN` = `license.kadimasoft.com`
 
-## Полная инструкция по развертыванию в Docker
+## Развертывание в Docker
 
-### 1) Установи Docker
-Нужен Docker Engine и docker compose.
-
-### 2) Выбери вариант запуска
-
-#### Вариант A — без HTTPS (только dev)
+### Вариант A - без HTTPS (dev)
 1) В `.env` поставь `ALLOW_INSECURE_HTTP=true`.
 2) Запусти:
 
@@ -49,7 +44,7 @@ URL:
 - `http://localhost:8000`
 - `http://localhost:8000/admin-ui/login`
 
-#### Вариант B — HTTPS self‑signed (dev)
+### Вариант B - HTTPS self-signed (dev)
 1) Сгенерируй сертификаты:
 
 ```bash
@@ -69,7 +64,7 @@ docker compose -f docker-compose.yml -f docker-compose.selfsigned.yml up -d --bu
 URL:
 - `https://localhost/admin-ui/login`
 
-#### Вариант C — HTTPS Let's Encrypt + авто‑продление (prod)
+### Вариант C - HTTPS Let's Encrypt + авто-продление (prod)
 1) Проверь, что DNS указывает на сервер, порты 80/443 открыты.
 2) В `.env` задай:
 
@@ -100,18 +95,42 @@ URL:
 
 Certbot автоматически обновляет сертификаты каждые 12 часов.
 
-### 3) Прогон миграций
+### Вариант D - в сети frappe_network (без nginx)
+Подходит, если ERPNext/Frappe и license server живут в одной docker сети и доступ нужны только контейнерам.
+
+1) Создай внешнюю сеть (если ее нет):
+
+```bash
+docker network create frappe_network || true
+```
+
+2) Запусти:
+
+```bash
+docker compose -f docker-compose.frappe.yml up -d --build
+```
+
+По умолчанию порт 8000 не публикуется на хост. Если нужен доступ с хоста, добавь `ports: ["8000:8000"]` в `license_api`.
+
+### Прогон миграций
 После первого старта:
 
 ```bash
 docker compose exec api alembic upgrade head
 ```
 
+Для варианта frappe:
+
+```bash
+docker compose -f docker-compose.frappe.yml exec -w /app license_api sh -lc \
+  'export PYTHONPATH=/app; alembic upgrade head'
+```
+
 ## Администрирование (ручное управление лицензиями)
-Да, можно полностью управлять лицензиями вручную — через CLI или через Admin UI / Admin API.
+Да, можно полностью управлять лицензиями вручную - через CLI или через Admin UI / Admin API.
 
 ### Admin UI (FastAPI + Jinja)
-- Открывай `https://license.kadimasoft.com/admin-ui/login`
+- Открывай `https://license.kadimasoft.com/admin-ui/login` (или `http://SERVER_IP:8000/admin-ui/login` если порт проброшен)
 - Вводи `ADMIN_TOKEN`
 - Создавай tenants, ключи лицензий, продлевай подписки, блокируй устройства
 - Управляй ERP allowlist на странице `ERP Allowlist`
@@ -142,7 +161,7 @@ docker compose exec api python scripts/license_admin.py list-devices --company-c
 docker compose exec api python scripts/license_admin.py revoke-device --company-code menor --device-id DEVICE123
 ```
 
-### Admin API (token‑protected)
+### Admin API (token-protected)
 Все запросы требуют `X-Admin-Token`.
 
 ```bash
@@ -152,8 +171,13 @@ curl -H "X-Admin-Token: YOUR_ADMIN_TOKEN" -X POST https://license.kadimasoft.com
   -d '{"company_code":"menor","erpnext_url":"https://menor.kadimasoft.com","api_key":"KEY","api_secret":"SECRET","subscription_expires_at":"2025-12-31T23:59:59Z","status":"active"}'
 ```
 
+## ERP allowlist
+- Если таблица allowlist пустая, используются `ERP_ALLOWED_DOCTYPES` и `ERP_ALLOWED_METHODS` из `.env`.
+- Чтобы управлять allowlist без правки `.env`, используй страницу `ERP Allowlist` в Admin UI.
+- Кнопка `Load defaults into DB` переносит значения из `.env` в базу.
+
 ## API overview
-- `POST /activate` -> выдаёт токен (7 дней)
+- `POST /activate` -> выдает токен (7 дней)
 - `POST /refresh` -> обновляет токен
 - `GET /status` -> статус подписки
 - ERPNext прокси: `/picklists`, `/items`, `/bin`, `/resource/{doctype}`
