@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title=settings.app_name)
 session_secret = settings.session_secret or settings.jwt_secret
 trusted_proxy_nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-for raw in settings.trusted_proxy_nets:
+for raw in settings.trusted_proxy_net_list:
     try:
         trusted_proxy_nets.append(ipaddress.ip_network(raw, strict=False))
     except ValueError:

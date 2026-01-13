@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,20 @@ def _parse_csv_list(value: object) -> list[str]:
     return [text] if text else []
 
 
+def parse_proxy_net_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                return _parse_csv_list(json.loads(text))
+            except json.JSONDecodeError:
+                pass
+        return _parse_csv_list(text)
+    return _parse_csv_list(value)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -30,7 +45,7 @@ class Settings(BaseSettings):
     token_ttl_days: int = Field(default=7, alias="TOKEN_TTL_DAYS")
     grace_days: int = Field(default=7, alias="GRACE_DAYS")
     allow_insecure_http: bool = Field(default=False, alias="ALLOW_INSECURE_HTTP")
-    trusted_proxy_nets: list[str] = Field(default_factory=list, alias="TRUSTED_PROXY_NETS")
+    trusted_proxy_nets: str = Field(default="", alias="TRUSTED_PROXY_NETS")
     rate_limit_activate_per_minute: int = Field(default=5, alias="RATE_LIMIT_ACTIVATE_PER_MINUTE")
     rate_limit_activate_ip_per_minute: int = Field(
         default=30, alias="RATE_LIMIT_ACTIVATE_IP_PER_MINUTE"
@@ -71,16 +86,15 @@ class Settings(BaseSettings):
     def parse_erp_allowed_methods(cls, value: object) -> list[str]:
         return [item.upper() for item in _parse_csv_list(value)]
 
-    @field_validator("trusted_proxy_nets", mode="before")
-    @classmethod
-    def parse_trusted_proxy_nets(cls, value: object) -> list[str]:
-        return _parse_csv_list(value)
-
     @field_validator("admin_session_same_site", mode="before")
     @classmethod
     def parse_admin_session_same_site(cls, value: object) -> str:
         text = str(value or "").strip().lower()
         return text if text in {"lax", "strict", "none"} else "lax"
+
+    @property
+    def trusted_proxy_net_list(self) -> list[str]:
+        return parse_proxy_net_list(self.trusted_proxy_nets)
 
 
 @lru_cache
