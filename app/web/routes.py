@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_client_ip, get_db
 from app.config import get_settings
 from app.models import (
+    AuditLog,
     Device,
     ERPAllowlistEntry,
     ERPAllowlistType,
@@ -412,6 +413,18 @@ async def delete_tenant(request: Request, company_code: str, db: Session = Depen
     if not tenant:
         set_flash(request, error="Tenant not found")
         return redirect_to("/admin-ui/tenants")
+
+    device_ids = [
+        row.id for row in db.query(Device.id).filter(Device.tenant_id == tenant.id).all()
+    ]
+    audit_query = db.query(AuditLog)
+    if device_ids:
+        audit_query = audit_query.filter(
+            (AuditLog.tenant_id == tenant.id) | (AuditLog.device_id.in_(device_ids))
+        )
+    else:
+        audit_query = audit_query.filter(AuditLog.tenant_id == tenant.id)
+    audit_query.delete(synchronize_session=False)
 
     db.delete(tenant)
     db.commit()

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
-from app.models import Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.schemas import (
     DeviceRevokeRequest,
     DeviceResponse,
@@ -131,6 +131,17 @@ def update_subscription(
 @router.delete("/tenants/{company_code}", status_code=204)
 def delete_tenant(company_code: str, db: Session = Depends(get_db)) -> None:
     tenant = get_tenant_or_404(db, company_code)
+    device_ids = [
+        row.id for row in db.query(Device.id).filter(Device.tenant_id == tenant.id).all()
+    ]
+    audit_query = db.query(AuditLog)
+    if device_ids:
+        audit_query = audit_query.filter(
+            (AuditLog.tenant_id == tenant.id) | (AuditLog.device_id.in_(device_ids))
+        )
+    else:
+        audit_query = audit_query.filter(AuditLog.tenant_id == tenant.id)
+    audit_query.delete(synchronize_session=False)
     db.delete(tenant)
     db.commit()
     return None
