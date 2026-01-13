@@ -30,12 +30,20 @@ class Settings(BaseSettings):
     token_ttl_days: int = Field(default=7, alias="TOKEN_TTL_DAYS")
     grace_days: int = Field(default=7, alias="GRACE_DAYS")
     allow_insecure_http: bool = Field(default=False, alias="ALLOW_INSECURE_HTTP")
+    trusted_proxy_nets: list[str] = Field(default_factory=list, alias="TRUSTED_PROXY_NETS")
     rate_limit_activate_per_minute: int = Field(default=5, alias="RATE_LIMIT_ACTIVATE_PER_MINUTE")
+    rate_limit_activate_ip_per_minute: int = Field(
+        default=30, alias="RATE_LIMIT_ACTIVATE_IP_PER_MINUTE"
+    )
     rate_limit_refresh_per_minute: int = Field(default=10, alias="RATE_LIMIT_REFRESH_PER_MINUTE")
+    rate_limit_login_per_minute: int = Field(default=10, alias="RATE_LIMIT_LOGIN_PER_MINUTE")
     erp_timeout_seconds: int = Field(default=10, alias="ERP_TIMEOUT_SECONDS")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     admin_token: str | None = Field(default=None, alias="ADMIN_TOKEN")
     session_secret: str | None = Field(default=None, alias="SESSION_SECRET")
+    admin_session_max_age_seconds: int = Field(default=8 * 60 * 60, alias="ADMIN_SESSION_MAX_AGE_SECONDS")
+    admin_session_idle_seconds: int = Field(default=30 * 60, alias="ADMIN_SESSION_IDLE_SECONDS")
+    admin_session_same_site: str = Field(default="lax", alias="ADMIN_SESSION_SAMESITE")
     erp_allowed_doctypes: list[str] = Field(
         default_factory=lambda: [
             "Pick List",
@@ -62,6 +70,17 @@ class Settings(BaseSettings):
     @classmethod
     def parse_erp_allowed_methods(cls, value: object) -> list[str]:
         return [item.upper() for item in _parse_csv_list(value)]
+
+    @field_validator("trusted_proxy_nets", mode="before")
+    @classmethod
+    def parse_trusted_proxy_nets(cls, value: object) -> list[str]:
+        return _parse_csv_list(value)
+
+    @field_validator("admin_session_same_site", mode="before")
+    @classmethod
+    def parse_admin_session_same_site(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in {"lax", "strict", "none"} else "lax"
 
 
 @lru_cache

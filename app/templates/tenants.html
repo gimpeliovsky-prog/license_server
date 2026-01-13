@@ -36,6 +36,7 @@
 <div class="panel">
   <h2>Create tenant</h2>
   <form method="post" action="/admin-ui/tenants">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="grid-2">
       <div>
         <label>Company code</label>

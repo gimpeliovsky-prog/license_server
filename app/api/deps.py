@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import hmac
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ settings = get_settings()
 
 bearer_scheme = HTTPBearer(auto_error=False)
 activate_limiter = RateLimiter(settings.rate_limit_activate_per_minute, 60)
+activate_ip_limiter = RateLimiter(settings.rate_limit_activate_ip_per_minute, 60)
 refresh_limiter = RateLimiter(settings.rate_limit_refresh_per_minute, 60)
 
 
@@ -51,6 +53,7 @@ def enforce_rate_limit(limiter: RateLimiter, key: str) -> None:
 
 def rate_limit_activate(request: Request, company_code: str) -> None:
     client_ip = get_client_ip(request)
+    enforce_rate_limit(activate_ip_limiter, client_ip)
     enforce_rate_limit(activate_limiter, f"{client_ip}:{company_code}")
 
 
@@ -62,7 +65,7 @@ def rate_limit_refresh(request: Request) -> None:
 def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
     if not settings.admin_token:
         raise HTTPException(status_code=503, detail="Admin token not configured")
-    if not x_admin_token or x_admin_token != settings.admin_token:
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, settings.admin_token):
         raise HTTPException(status_code=401, detail="Admin token invalid")
 
 

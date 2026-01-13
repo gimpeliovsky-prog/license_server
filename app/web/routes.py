@@ -1,3 +1,4 @@
+import hmac
 import secrets
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
@@ -8,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_client_ip, get_db
 from app.config import get_settings
 from app.models import (
     Device,
@@ -25,6 +26,7 @@ from app.services.allowlist import (
     normalize_method,
     seed_allowlist_from_settings,
 )
+from app.services.rate_limit import RateLimiter
 from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
@@ -32,6 +34,7 @@ from app.utils.time import utcnow
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
+login_limiter = RateLimiter(settings.rate_limit_login_per_minute, 60)
 
 
 def parse_datetime_input(value: str) -> datetime:
@@ -63,9 +66,54 @@ def is_admin(request: Request) -> bool:
     return bool(request.session.get("is_admin"))
 
 
-def require_admin_or_redirect(request: Request):
+def validate_admin_session(request: Request) -> bool:
     if not is_admin(request):
+        return False
+    now_ts = int(utcnow().timestamp())
+    login_at = request.session.get("login_at")
+    last_seen = request.session.get("last_seen")
+    max_age = settings.admin_session_max_age_seconds
+    idle = settings.admin_session_idle_seconds
+
+    try:
+        login_at = int(login_at)
+        last_seen = int(last_seen)
+    except (TypeError, ValueError):
+        request.session.clear()
+        return False
+
+    if max_age > 0 and now_ts - login_at > max_age:
+        request.session.clear()
+        set_flash(request, error="Admin session expired. Please log in again.")
+        return False
+    if idle > 0 and now_ts - last_seen > idle:
+        request.session.clear()
+        set_flash(request, error="Admin session timed out. Please log in again.")
+        return False
+
+    request.session["last_seen"] = now_ts
+    return True
+
+
+def require_admin_or_redirect(request: Request):
+    if not validate_admin_session(request):
         return RedirectResponse("/admin-ui/login", status_code=303)
+    return None
+
+
+def get_csrf_token(request: Request) -> str:
+    token = request.session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = token
+    return token
+
+
+def require_csrf(request: Request, form: dict, redirect_path: str) -> RedirectResponse | None:
+    token = str(form.get("csrf_token") or "").strip()
+    if not token or token != request.session.get("csrf_token"):
+        set_flash(request, error="Invalid CSRF token")
+        return redirect_to(redirect_path)
     return None
 
 
@@ -100,7 +148,7 @@ def index() -> RedirectResponse:
 
 @router.get("/login")
 def login_page(request: Request):
-    if is_admin(request):
+    if validate_admin_session(request):
         return redirect_to("/admin-ui/tenants")
     message, error, _ = pop_flash(request)
     context = {
@@ -110,6 +158,7 @@ def login_page(request: Request):
         "error": error,
         "admin_token_configured": bool(settings.admin_token),
         "is_admin": False,
+        "csrf_token": get_csrf_token(request),
     }
     return templates.TemplateResponse("login.html", context)
 
@@ -121,12 +170,25 @@ async def login(request: Request):
         return redirect_to("/admin-ui/login")
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/login")
+    if csrf_error:
+        return csrf_error
+
+    client_ip = get_client_ip(request)
+    if not login_limiter.allow(client_ip):
+        set_flash(request, error="Too many login attempts. Try again later.")
+        return redirect_to("/admin-ui/login")
+
     token = str(form.get("admin_token") or "")
-    if token != settings.admin_token:
+    if not hmac.compare_digest(token, settings.admin_token):
         set_flash(request, error="Invalid admin token")
         return redirect_to("/admin-ui/login")
 
     request.session["is_admin"] = True
+    now_ts = int(utcnow().timestamp())
+    request.session["login_at"] = now_ts
+    request.session["last_seen"] = now_ts
+    request.session["csrf_token"] = secrets.token_urlsafe(32)
     set_flash(request, message="Logged in")
     return redirect_to("/admin-ui/tenants")
 
@@ -154,6 +216,7 @@ def list_tenants(request: Request, db: Session = Depends(get_db)):
         "error": error,
         "statuses": [status.value for status in TenantStatus],
         "is_admin": True,
+        "csrf_token": get_csrf_token(request),
     }
     return templates.TemplateResponse("tenants.html", context)
 
@@ -165,6 +228,10 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
         return redirect_response
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/tenants")
+    if csrf_error:
+        return csrf_error
+
     company_code = str(form.get("company_code") or "").strip()
     erpnext_url = normalize_erpnext_url(str(form.get("erpnext_url") or ""))
     api_key = str(form.get("api_key") or "").strip()
@@ -243,6 +310,7 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         "tenant_statuses": [status.value for status in TenantStatus],
         "license_statuses": [status.value for status in LicenseKeyStatus],
         "is_admin": True,
+        "csrf_token": get_csrf_token(request),
     }
     return templates.TemplateResponse("tenant_detail.html", context)
 
@@ -259,6 +327,10 @@ async def update_tenant_status(request: Request, company_code: str, db: Session 
         return redirect_to("/admin-ui/tenants")
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
     status_raw = str(form.get("status") or "").strip()
     status = parse_tenant_status(status_raw)
     if not status:
@@ -283,6 +355,10 @@ async def update_subscription(request: Request, company_code: str, db: Session =
         return redirect_to("/admin-ui/tenants")
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
     expires_at_raw = str(form.get("expires_at") or "").strip()
     add_days_raw = str(form.get("add_days") or "").strip()
 
@@ -327,6 +403,11 @@ async def delete_tenant(request: Request, company_code: str, db: Session = Depen
     if redirect_response:
         return redirect_response
 
+    form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
     tenant = get_tenant_or_none(db, company_code)
     if not tenant:
         set_flash(request, error="Tenant not found")
@@ -350,6 +431,10 @@ async def create_license(request: Request, company_code: str, db: Session = Depe
         return redirect_to("/admin-ui/tenants")
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
     license_key_raw = str(form.get("license_key") or "").strip()
     status_raw = str(form.get("status") or LicenseKeyStatus.active.value).strip()
 
@@ -383,6 +468,10 @@ async def update_license_status(request: Request, license_id: str, db: Session =
     company_code = str(form.get("company_code") or "").strip()
     status_raw = str(form.get("status") or "").strip()
     redirect_target = f"/admin-ui/tenants/{company_code}" if company_code else "/admin-ui/tenants"
+    csrf_error = require_csrf(request, form, redirect_target)
+    if csrf_error:
+        return csrf_error
+
     status = parse_license_status(status_raw)
     if not status:
         set_flash(request, error="Invalid license status")
@@ -415,6 +504,9 @@ async def delete_license(request: Request, license_id: str, db: Session = Depend
     form = await request.form()
     company_code = str(form.get("company_code") or "").strip()
     redirect_target = f"/admin-ui/tenants/{company_code}" if company_code else "/admin-ui/tenants"
+    csrf_error = require_csrf(request, form, redirect_target)
+    if csrf_error:
+        return csrf_error
 
     try:
         license_uuid = uuid.UUID(license_id)
@@ -445,6 +537,10 @@ async def update_device(request: Request, company_code: str, device_id: str, db:
         return redirect_to("/admin-ui/tenants")
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
     revoked_raw = str(form.get("revoked") or "").strip().lower()
     revoked = revoked_raw == "true"
 
@@ -493,6 +589,7 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
         "message": message,
         "error": error,
         "is_admin": True,
+        "csrf_token": get_csrf_token(request),
     }
     return templates.TemplateResponse("erp_allowlist.html", context)
 
@@ -502,6 +599,11 @@ async def seed_allowlist(request: Request, db: Session = Depends(get_db)):
     redirect_response = require_admin_or_redirect(request)
     if redirect_response:
         return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
 
     if has_allowlist_entries(db):
         set_flash(request, error="Allowlist already has entries")
@@ -522,6 +624,10 @@ async def add_allowlist_doctype(request: Request, db: Session = Depends(get_db))
         return redirect_response
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
+
     raw_value = str(form.get("value") or "")
     value = normalize_doctype(raw_value)
     if not value:
@@ -559,6 +665,10 @@ async def add_allowlist_method(request: Request, db: Session = Depends(get_db)):
         return redirect_response
 
     form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
+
     raw_value = str(form.get("value") or "")
     value = normalize_method(raw_value)
     if not value:
@@ -594,6 +704,11 @@ async def delete_allowlist_entry(request: Request, entry_id: str, db: Session = 
     redirect_response = require_admin_or_redirect(request)
     if redirect_response:
         return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
 
     try:
         entry_uuid = uuid.UUID(entry_id)

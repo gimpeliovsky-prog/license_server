@@ -6,6 +6,7 @@
 <div class="panel">
   <h2>Doctypes</h2>
   <form method="post" action="/admin-ui/erp-allowlist/doctypes">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="inline">
       <input type="text" name="value" placeholder="Pick List" required>
       <button type="submit">Add doctype</button>
@@ -27,6 +28,7 @@
         <td>{{ entry.created_at.isoformat() }}</td>
         <td>
           <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button-danger" type="submit">Delete</button>
           </form>
         </td>
@@ -42,6 +44,7 @@
 <div class="panel">
   <h2>Methods</h2>
   <form method="post" action="/admin-ui/erp-allowlist/methods">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="inline">
       <input type="text" name="value" placeholder="GET" required>
       <button type="submit">Add method</button>
@@ -63,6 +66,7 @@
         <td>{{ entry.created_at.isoformat() }}</td>
         <td>
           <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button-danger" type="submit">Delete</button>
           </form>
         </td>
@@ -81,6 +85,7 @@
     If the allowlist is empty, the proxy uses ERP_ALLOWED_DOCTYPES and ERP_ALLOWED_METHODS from .env.
   </p>
   <form method="post" action="/admin-ui/erp-allowlist/seed">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="button-secondary" type="submit">Load defaults into DB</button>
   </form>
   {% if defaults_doctypes or defaults_methods %}

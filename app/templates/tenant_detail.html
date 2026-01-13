@@ -26,6 +26,7 @@
 <div class="panel">
   <h2>Update status</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/status" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="status">
       {% for status in tenant_statuses %}
       <option value="{{ status }}" {% if status == tenant.status.value %}selected{% endif %}>{{ status }}</option>
@@ -38,6 +39,7 @@
 <div class="panel">
   <h2>Update subscription</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/subscription">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="grid-2">
       <div>
         <label>Set expires at (YYYY-MM-DD or ISO)</label>
@@ -57,6 +59,7 @@
 <div class="panel">
   <h2>Create license key</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/licenses">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="grid-2">
       <div>
         <label>Custom license key (optional)</label>
@@ -97,6 +100,7 @@
         <td>{{ key.created_at.isoformat() }}</td>
         <td>
           <form method="post" action="/admin-ui/licenses/{{ key.id }}/status" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="company_code" value="{{ tenant.company_code }}">
             <select name="status">
               {% for status in license_statuses %}
@@ -106,6 +110,7 @@
             <button type="submit">Save</button>
           </form>
           <form method="post" action="/admin-ui/licenses/{{ key.id }}/delete" class="inline" onsubmit="return confirm('Delete this license key?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="company_code" value="{{ tenant.company_code }}">
             <button type="submit" class="button-danger">Delete</button>
           </form>
@@ -122,6 +127,7 @@
 <div class="panel">
   <h2>Delete tenant</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/delete" onsubmit="return confirm('Delete tenant and all related data?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="button-danger">Delete tenant</button>
   </form>
 </div>
@@ -147,11 +153,13 @@
         <td>
           {% if device.revoked %}
           <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="revoked" value="false">
             <button type="submit" class="button-secondary">Unrevoke</button>
           </form>
           {% else %}
           <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="revoked" value="true">
             <button type="submit" class="button-danger">Revoke</button>
           </form>

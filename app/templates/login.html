@@ -7,6 +7,7 @@
   <p class="muted">ADMIN_TOKEN is not configured. Set it in .env.</p>
   {% else %}
   <form method="post" action="/admin-ui/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Admin token</label>
     <input type="password" name="admin_token" placeholder="Enter admin token" required>
     <div style="margin-top: 12px;">
