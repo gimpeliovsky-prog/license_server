@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from app.db import SessionLocal
 from app.models import Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
@@ -64,9 +65,13 @@ def create_tenant(
     if existing:
         print("Tenant already exists")
         return 1
+    normalized_url = normalize_erpnext_url(erpnext_url)
+    if not normalized_url:
+        print("ERPNext URL is required")
+        return 1
     tenant = Tenant(
         company_code=company_code,
-        erpnext_url=erpnext_url.rstrip("/"),
+        erpnext_url=normalized_url,
         api_key=api_key,
         api_secret=api_secret,
         status=TenantStatus(status),

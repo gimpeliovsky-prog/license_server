@@ -121,29 +121,6 @@ def update_picklist(
     return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
 
 
-@router.get("/items/{item_code}")
-def get_item(
-    item_code: str,
-    allowlist: Allowlist = Depends(get_allowlist_dep),
-    context=Depends(get_request_context),
-):
-    safe_code = quote(item_code, safe="")
-    ensure_method_allowed("GET", allowlist)
-    get_allowed_doctype("Item", allowlist)
-    try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
-            "GET",
-            f"/api/resource/Item/{safe_code}",
-        )
-    except ERPNextError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
-
-
 @router.get("/items/by-product-code")
 def get_items_by_product_code(
     filters: str = Query(...),
@@ -199,6 +176,29 @@ def get_items_all(
             "GET",
             "/api/resource/Item",
             params=params,
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+
+
+@router.get("/items/{item_code}")
+def get_item(
+    item_code: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_request_context),
+):
+    safe_code = quote(item_code, safe="")
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Item", allowlist)
+    try:
+        response = request_erpnext(
+            context.tenant.erpnext_url,
+            context.tenant.api_key,
+            context.tenant.api_secret,
+            "GET",
+            f"/api/resource/Item/{safe_code}",
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

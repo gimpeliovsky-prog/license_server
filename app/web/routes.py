@@ -25,6 +25,7 @@ from app.services.allowlist import (
     normalize_method,
     seed_allowlist_from_settings,
 )
+from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
@@ -165,7 +166,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
 
     form = await request.form()
     company_code = str(form.get("company_code") or "").strip()
-    erpnext_url = str(form.get("erpnext_url") or "").strip()
+    erpnext_url = normalize_erpnext_url(str(form.get("erpnext_url") or ""))
     api_key = str(form.get("api_key") or "").strip()
     api_secret = str(form.get("api_secret") or "").strip()
     expires_at_raw = str(form.get("subscription_expires_at") or "").strip()
@@ -192,7 +193,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
 
     tenant = Tenant(
         company_code=company_code,
-        erpnext_url=erpnext_url.rstrip("/"),
+        erpnext_url=erpnext_url,
         api_key=api_key,
         api_secret=api_secret,
         status=status,
@@ -320,6 +321,23 @@ async def update_subscription(request: Request, company_code: str, db: Session =
     return redirect_to(f"/admin-ui/tenants/{company_code}")
 
 
+@router.post("/tenants/{company_code}/delete")
+async def delete_tenant(request: Request, company_code: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    tenant = get_tenant_or_none(db, company_code)
+    if not tenant:
+        set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/tenants")
+
+    db.delete(tenant)
+    db.commit()
+    set_flash(request, message="Tenant deleted")
+    return redirect_to("/admin-ui/tenants")
+
+
 @router.post("/tenants/{company_code}/licenses")
 async def create_license(request: Request, company_code: str, db: Session = Depends(get_db)):
     redirect_response = require_admin_or_redirect(request)
@@ -385,6 +403,33 @@ async def update_license_status(request: Request, license_id: str, db: Session =
     db.commit()
 
     set_flash(request, message="License status updated")
+    return redirect_to(redirect_target)
+
+
+@router.post("/licenses/{license_id}/delete")
+async def delete_license(request: Request, license_id: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    company_code = str(form.get("company_code") or "").strip()
+    redirect_target = f"/admin-ui/tenants/{company_code}" if company_code else "/admin-ui/tenants"
+
+    try:
+        license_uuid = uuid.UUID(license_id)
+    except ValueError:
+        set_flash(request, error="Invalid license id")
+        return redirect_to(redirect_target)
+
+    license_entry = db.query(LicenseKey).filter(LicenseKey.id == license_uuid).first()
+    if not license_entry:
+        set_flash(request, error="License not found")
+        return redirect_to(redirect_target)
+
+    db.delete(license_entry)
+    db.commit()
+    set_flash(request, message="License deleted")
     return redirect_to(redirect_target)
 
 

@@ -18,6 +18,7 @@ from app.schemas import (
     TenantResponse,
     TenantStatusUpdateRequest,
 )
+from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.utils.time import utcnow
 
@@ -73,9 +74,13 @@ def create_tenant(payload: TenantCreateRequest, db: Session = Depends(get_db)) -
     if existing:
         raise HTTPException(status_code=409, detail="Tenant already exists")
 
+    normalized_url = normalize_erpnext_url(payload.erpnext_url)
+    if not normalized_url:
+        raise HTTPException(status_code=400, detail="ERPNext URL is required")
+
     tenant = Tenant(
         company_code=payload.company_code,
-        erpnext_url=payload.erpnext_url.rstrip("/"),
+        erpnext_url=normalized_url,
         api_key=payload.api_key,
         api_secret=payload.api_secret,
         status=parse_tenant_status(payload.status),
@@ -121,6 +126,14 @@ def update_subscription(
     db.commit()
     db.refresh(tenant)
     return serialize_tenant(tenant)
+
+
+@router.delete("/tenants/{company_code}", status_code=204)
+def delete_tenant(company_code: str, db: Session = Depends(get_db)) -> None:
+    tenant = get_tenant_or_404(db, company_code)
+    db.delete(tenant)
+    db.commit()
+    return None
 
 
 @router.get("/tenants/{company_code}/licenses", response_model=list[LicenseResponse])
@@ -186,6 +199,22 @@ def update_license_status(
         created_at=license_entry.created_at,
         license_key=None,
     )
+
+
+@router.delete("/licenses/{license_id}", status_code=204)
+def delete_license(license_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        license_uuid = uuid.UUID(license_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid license id")
+
+    license_entry = db.query(LicenseKey).filter(LicenseKey.id == license_uuid).first()
+    if not license_entry:
+        raise HTTPException(status_code=404, detail="License key not found")
+
+    db.delete(license_entry)
+    db.commit()
+    return None
 
 
 @router.get("/tenants/{company_code}/devices", response_model=list[DeviceResponse])

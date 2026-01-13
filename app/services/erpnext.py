@@ -14,6 +14,15 @@ class ERPNextError(Exception):
     pass
 
 
+def normalize_erpnext_url(raw: str) -> str:
+    trimmed = (raw or "").strip()
+    if not trimmed:
+        return ""
+    if trimmed.lower().startswith(("http://", "https://")):
+        return trimmed.rstrip("/")
+    return f"https://{trimmed}".rstrip("/")
+
+
 def request_erpnext(
     base_url: str,
     api_key: str,
@@ -23,7 +32,10 @@ def request_erpnext(
     params: dict[str, Any] | None = None,
     json_body: dict[str, Any] | None = None,
 ) -> httpx.Response:
-    url = f"{base_url.rstrip('/')}{path}"
+    normalized = normalize_erpnext_url(base_url)
+    if not normalized:
+        raise ERPNextError("ERPNext URL not configured")
+    url = f"{normalized}{path}"
     headers = {"Authorization": f"token {api_key}:{api_secret}"}
     try:
         client = get_client()

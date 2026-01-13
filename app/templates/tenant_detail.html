@@ -105,6 +105,10 @@
             </select>
             <button type="submit">Save</button>
           </form>
+          <form method="post" action="/admin-ui/licenses/{{ key.id }}/delete" class="inline" onsubmit="return confirm('Delete this license key?');">
+            <input type="hidden" name="company_code" value="{{ tenant.company_code }}">
+            <button type="submit" class="button-danger">Delete</button>
+          </form>
         </td>
       </tr>
       {% endfor %}
@@ -113,6 +117,13 @@
   {% else %}
   <p class="muted">No license keys.</p>
   {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Delete tenant</h2>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/delete" onsubmit="return confirm('Delete tenant and all related data?');">
+    <button type="submit" class="button-danger">Delete tenant</button>
+  </form>
 </div>
 
 <div class="panel">
