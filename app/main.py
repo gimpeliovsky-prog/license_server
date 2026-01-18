@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import admin_router, auth_router, erpnext_router, status_router
+from app.api.routes import admin_router, auth_router, erpnext_router, ota_router, status_router
 from app.config import get_settings
 from app.web.routes import router as web_router
 
@@ -50,6 +50,7 @@ async def enforce_https(request: Request, call_next):
 
 app.include_router(auth_router)
 app.include_router(status_router)
+app.include_router(ota_router)
 app.include_router(erpnext_router)
 app.include_router(admin_router)
 app.include_router(web_router)
