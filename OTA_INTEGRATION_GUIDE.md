@@ -30,7 +30,7 @@ idf.py build
 ```bash
 python scripts/ota_management.py \
   --server http://your-server.com \
-  --token YOUR_JWT_TOKEN \
+  --admin-token YOUR_ADMIN_TOKEN \
   upload \
   --file /path/to/firmware.bin \
   --device-type scales_bridge_tab5 \
@@ -44,12 +44,12 @@ python scripts/ota_management.py \
 curl -F "file=@firmware.bin" \
      -F "device_type=scales_bridge_tab5" \
      -F "version=1.0.0" \
-     -H "Authorization: Bearer TOKEN" \
+     -H "X-Admin-Token: ADMIN_TOKEN" \
      http://your-server.com/api/ota/admin/upload
 
 # 2. Зарегистрировать в БД
 curl -X POST http://your-server.com/api/ota/admin/firmware \
-     -H "Authorization: Bearer TOKEN" \
+     -H "X-Admin-Token: ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
        "device_type": "scales_bridge_tab5",
@@ -72,6 +72,7 @@ curl -X POST http://your-server.com/api/ota/admin/firmware \
    - Установить правильный `OTA_SERVER_URL`
    - Установить правильный `OTA_DEVICE_TYPE`
    - Получить `device_id` из конфига устройства
+   - Получить JWT устройства через `/activate` и сохранить (Bearer токен)
    - Получить текущую версию из `app_desc.version`
 
 3. Периодически вызывать `ota_check_and_update()`:
@@ -138,13 +139,13 @@ license_server/
 
 ## API Endpoints
 
-### Device endpoints (public)
+### Device endpoints (Bearer JWT required)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/ota/check` | Check for available updates |
-| GET | `/api/ota/download/{firmware_id}` | Download firmware binary |
-| POST | `/api/ota/status` | Report OTA operation status |
+| POST | `/api/ota/check` | Check for available updates (Bearer JWT required) |
+| GET | `/api/ota/download/{firmware_id}` | Download firmware binary (Bearer JWT required) |
+| POST | `/api/ota/status` | Report OTA operation status (Bearer JWT required) |
 
 ### Admin endpoints (authenticated)
 
@@ -162,17 +163,15 @@ license_server/
 
 ### Server-side
 
-Настройки в `app/config.py`:
+Настройки в `.env`:
 
-```python
-# Путь для хранения прошивок (по умолчанию: firmware/)
-FIRMWARE_BASE_PATH = "firmware"
+```bash
+# Админ-доступ к OTA admin endpoints
+ADMIN_TOKEN=change-me-admin
 
-# Максимальный размер загружаемого файла
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
-
-# Требовать HTTPS для OTA (рекомендуется)
-OTA_REQUIRE_HTTPS = True
+# Подпись download_url (защита от прямого скачивания)
+OTA_DOWNLOAD_SECRET=change-me-download
+OTA_DOWNLOAD_TTL_SECONDS=600  # 10 минут
 ```
 
 ### Device-side
@@ -184,6 +183,7 @@ OTA_REQUIRE_HTTPS = True
 #define OTA_DEVICE_TYPE "scales_bridge_tab5"
 #define OTA_CHECK_INTERVAL_SEC (24 * 3600)  // Check once per day
 #define OTA_REQUEST_TIMEOUT_MS 30000         // 30 seconds
+// JWT устройства получите через /activate и передавайте как Bearer
 ```
 
 ## Управление версиями
@@ -278,10 +278,10 @@ db.commit()
    Без HTTPS возможен Man-in-the-Middle атака
    ```
 
-2. **Проверяйте JWT токены**
+2. **Проверяйте ADMIN_TOKEN**
    ```
    Admin endpoints требуют аутентификации
-   Device endpoints открыты (предполагается защита на сетевом уровне)
+   Device endpoints требуют Bearer JWT устройства
    ```
 
 3. **Верифицируйте хеши**
@@ -296,6 +296,18 @@ db.commit()
    Пример: нельзя обновиться с 1.0 на 3.0, нужно 1.0 → 2.0 → 3.0
    ```
 
+5. **Используйте подписанные ссылки на скачивание**
+   ```
+   download_url содержит подпись и срок действия (expires)
+   Устройства должны скачивать только по URL из /api/ota/check
+   ```
+
+6. **Используйте JWT устройства**
+   ```
+   /api/ota/check и /api/ota/status требуют Authorization: Bearer <device_jwt>
+   Получайте токен через /activate (см. auth API)
+   ```
+
 ## Примеры использования
 
 ### Upload и регистрация через Python скрипт
@@ -304,14 +316,14 @@ db.commit()
 #!/bin/bash
 
 SERVER="http://localhost:8000"
-TOKEN="your_jwt_token"
+ADMIN_TOKEN="your_admin_token"
 FIRMWARE_FILE="firmware.bin"
 DEVICE_TYPE="scales_bridge_tab5"
 VERSION="1.1.0"
 
 python scripts/ota_management.py \
   --server $SERVER \
-  --token $TOKEN \
+  --admin-token $ADMIN_TOKEN \
   upload \
   --file $FIRMWARE_FILE \
   --device-type $DEVICE_TYPE \
@@ -322,12 +334,12 @@ python scripts/ota_management.py \
 
 ```bash
 python scripts/ota_management.py \
-  --token TOKEN \
+  --admin-token ADMIN_TOKEN \
   list \
   --device-type scales_bridge_tab5
 
 python scripts/ota_management.py \
-  --token TOKEN \
+  --admin-token ADMIN_TOKEN \
   logs \
   --device-id 123
 ```
@@ -336,6 +348,7 @@ python scripts/ota_management.py \
 
 ```bash
 curl -X POST http://server.com/api/ota/status \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,

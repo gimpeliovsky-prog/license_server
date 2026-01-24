@@ -17,7 +17,7 @@
   - error messages
 
 ### API Routes (7 endpoints)
-- [x] PUBLIC:
+- [x] DEVICE (Bearer JWT):
   - `POST /api/ota/check` - Check for available updates
   - `GET /api/ota/download/{firmware_id}` - Download firmware binary
   - `POST /api/ota/status` - Report OTA operation status
@@ -138,7 +138,8 @@ idf.py build
 
 # Upload
 python scripts/ota_management.py \
-  --token YOUR_JWT_TOKEN \
+  --admin-token YOUR_ADMIN_TOKEN \
+- Device JWT required for /api/ota/check and /api/ota/status
   upload \
   --file build/firmware.bin \
   --device-type scales_bridge_tab5 \
@@ -158,7 +159,7 @@ python scripts/ota_management.py \
 ```bash
 # Check update logs
 python scripts/ota_management.py \
-  --token YOUR_JWT_TOKEN \
+  --admin-token YOUR_ADMIN_TOKEN \
   logs \
   --device-id 123
 ```
@@ -219,8 +220,9 @@ c:\esp\projects\license_server\
 
 ## Security Features
 
-- ✓ JWT authentication for admin endpoints
+- ✓ ADMIN_TOKEN authentication for admin endpoints
 - ✓ SHA256 hash verification
+- ✓ Signed download URLs (expires + signature)
 - ✓ Semantic versioning validation
 - ✓ Version constraints (min_current_version)
 - ✓ HTTPS support recommended

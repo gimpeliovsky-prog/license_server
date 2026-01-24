@@ -7,17 +7,21 @@
 ```bash
 # Установить переменные для удобства
 export OTA_SERVER="http://localhost:8000"
-export JWT_TOKEN="your_jwt_token_here"
+export ADMIN_TOKEN="your_admin_token_here"
+export DEVICE_TOKEN="your_device_jwt_here"
 export DEVICE_TYPE="scales_bridge_tab5"
 export DEVICE_ID="123"
 ```
 
-## Device Endpoints (public)
+> `DEVICE_TOKEN` выдаётся эндпоинтом `/activate`.
+
+## Device Endpoints (Bearer JWT required)
 
 ### 1. Проверить доступность обновлений
 
 ```bash
 curl -X POST "$OTA_SERVER/api/ota/check" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -35,7 +39,7 @@ curl -X POST "$OTA_SERVER/api/ota/check" \
   "version": "1.1.0",
   "build_number": 2,
   "description": "Bug fixes and improvements",
-  "download_url": "/api/ota/download/456",
+  "download_url": "/api/ota/download/456?device_id=123&expires=1700000000&sig=abc123...",
   "file_hash": "abc123def456...",
   "file_size": 524288
 }
@@ -50,14 +54,23 @@ curl -X POST "$OTA_SERVER/api/ota/check" \
 
 ### 2. Скачать прошивку
 
+> `download_url` подписан (expires + sig) при включенном `OTA_DOWNLOAD_SECRET`.
+> Используйте URL из ответа `/api/ota/check`.
+
 ```bash
+# Используйте download_url из ответа /api/ota/check
+DOWNLOAD_URL="/api/ota/download/456?device_id=123&expires=1700000000&sig=abc123..."
+
 # Сохранить в файл
-curl -o firmware.bin "$OTA_SERVER/api/ota/download/456"
+curl -o firmware.bin \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
+  "$OTA_SERVER$DOWNLOAD_URL"
 
 # Или с более подробным выводом
 curl -v -o firmware.bin \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Accept: application/octet-stream" \
-  "$OTA_SERVER/api/ota/download/456"
+  "$OTA_SERVER$DOWNLOAD_URL"
 ```
 
 ### 3. Отправить статус обновления
@@ -65,6 +78,7 @@ curl -v -o firmware.bin \
 ```bash
 # Начало скачивания
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -75,6 +89,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 
 # Прогресс скачивания (каждые 100KB)
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -85,6 +100,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 
 # Начало установки
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -94,6 +110,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 
 # Успешная установка
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -104,6 +121,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 
 # Ошибка при обновлении
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -113,7 +131,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
   }'
 ```
 
-## Admin Endpoints (требуется JWT)
+## Admin Endpoints (требуется ADMIN_TOKEN)
 
 ### 1. Загрузить файл прошивки
 
@@ -122,7 +140,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 curl -F "file=@firmware.bin" \
   -F "device_type=scales_bridge_tab5" \
   -F "version=1.1.0" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   "$OTA_SERVER/api/ota/admin/upload"
 
 # С отображением прогресса
@@ -130,7 +148,7 @@ curl --progress-bar \
   -F "file=@firmware.bin" \
   -F "device_type=scales_bridge_tab5" \
   -F "version=1.1.0" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   "$OTA_SERVER/api/ota/admin/upload" | jq .
 ```
 
@@ -152,7 +170,7 @@ curl --progress-bar \
 ```bash
 curl -X POST "$OTA_SERVER/api/ota/admin/firmware" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d '{
     "device_type": "scales_bridge_tab5",
     "version": "1.1.0",
@@ -173,22 +191,22 @@ curl -X POST "$OTA_SERVER/api/ota/admin/firmware" \
 ```bash
 # Все прошивки
 curl "$OTA_SERVER/api/ota/admin/firmware" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # Только для конкретного типа устройства
 curl "$OTA_SERVER/api/ota/admin/firmware?device_type=scales_bridge_tab5" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # С пагинацией
 curl "$OTA_SERVER/api/ota/admin/firmware?skip=0&limit=10" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 ```
 
 ### 4. Получить детали прошивки
 
 ```bash
 curl "$OTA_SERVER/api/ota/admin/firmware/456" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 ```
 
 ### 5. Обновить метаданные прошивки
@@ -197,7 +215,7 @@ curl "$OTA_SERVER/api/ota/admin/firmware/456" \
 # Пометить как стабильную версию
 curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d '{
     "is_stable": true
   }'
@@ -205,7 +223,7 @@ curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
 # Обновить описание
 curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d '{
     "description": "New description",
     "release_notes": "New release notes"
@@ -214,7 +232,7 @@ curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
 # Отключить прошивку
 curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d '{
     "is_active": false
   }'
@@ -224,7 +242,7 @@ curl -X PATCH "$OTA_SERVER/api/ota/admin/firmware/456" \
 
 ```bash
 curl -X DELETE "$OTA_SERVER/api/ota/admin/firmware/456" \
-  -H "Authorization: Bearer $JWT_TOKEN"
+  -H "X-Admin-Token: $ADMIN_TOKEN"
 ```
 
 ### 7. Получить логи OTA операций
@@ -232,23 +250,23 @@ curl -X DELETE "$OTA_SERVER/api/ota/admin/firmware/456" \
 ```bash
 # Все логи
 curl "$OTA_SERVER/api/ota/admin/logs" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # Логи для конкретного устройства
 curl "$OTA_SERVER/api/ota/admin/logs?device_id=123" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # Логи для конкретной версии
 curl "$OTA_SERVER/api/ota/admin/logs?firmware_id=456" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # Логи с конкретным статусом
 curl "$OTA_SERVER/api/ota/admin/logs?status=failed" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 
 # С пагинацией
 curl "$OTA_SERVER/api/ota/admin/logs?skip=0&limit=100" \
-  -H "Authorization: Bearer $JWT_TOKEN" | jq .
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq .
 ```
 
 ## Полный Workflow Пример
@@ -261,7 +279,7 @@ curl "$OTA_SERVER/api/ota/admin/logs?skip=0&limit=100" \
 set -e
 
 SERVER="http://localhost:8000"
-TOKEN="your_jwt_token"
+ADMIN_TOKEN="your_admin_token"
 FIRMWARE="firmware.bin"
 DEVICE_TYPE="scales_bridge_tab5"
 VERSION="1.1.0"
@@ -271,7 +289,7 @@ UPLOAD_RESULT=$(curl -s \
   -F "file=@$FIRMWARE" \
   -F "device_type=$DEVICE_TYPE" \
   -F "version=$VERSION" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   "$SERVER/api/ota/admin/upload")
 
 echo "Upload result:"
@@ -287,7 +305,7 @@ echo ""
 echo "2. Registering firmware..."
 REGISTER_RESULT=$(curl -s -X POST "$SERVER/api/ota/admin/firmware" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d "{
     \"device_type\": \"$DEVICE_TYPE\",
     \"version\": \"$VERSION\",
@@ -310,7 +328,7 @@ echo ""
 echo "3. Marking as stable..."
 curl -s -X PATCH "$SERVER/api/ota/admin/firmware/$FIRMWARE_ID" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   -d '{"is_stable": true}' | jq .
 
 echo ""
@@ -322,6 +340,7 @@ echo "✓ Firmware $VERSION ready for deployment!"
 ```bash
 # На ESP32 или тестовом окружении
 curl -X POST "$OTA_SERVER/api/ota/check" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -334,9 +353,11 @@ curl -X POST "$OTA_SERVER/api/ota/check" \
 ### Шаг 3: Скачать обновление
 
 ```bash
-# Если доступно обновление
+# Если доступно обновление (используйте download_url из check)
+DOWNLOAD_URL="/api/ota/download/456?device_id=123&expires=1700000000&sig=abc123..."
 curl -o firmware_update.bin \
-  "http://server.com/api/ota/download/456"
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
+  "http://server.com$DOWNLOAD_URL"
 
 # Проверить хеш
 sha256sum firmware_update.bin
@@ -348,6 +369,7 @@ sha256sum firmware_update.bin
 ```bash
 # Начало скачивания
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -359,6 +381,7 @@ curl -X POST "$OTA_SERVER/api/ota/status" \
 
 # Завершение
 curl -X POST "$OTA_SERVER/api/ota/status" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -417,7 +440,7 @@ curl "$OTA_SERVER/health" | jq .
 ### Экспортировать результаты в CSV
 ```bash
 curl "$OTA_SERVER/api/ota/admin/firmware" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   | jq -r '.[] | [.device_type, .version, .is_stable] | @csv' \
   > firmware_list.csv
 ```
@@ -425,7 +448,7 @@ curl "$OTA_SERVER/api/ota/admin/firmware" \
 ### Найти все неудачные обновления
 ```bash
 curl "$OTA_SERVER/api/ota/admin/logs?status=failed" \
-  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
   | jq '.[] | select(.error_message != null)'
 ```
 
@@ -433,6 +456,7 @@ curl "$OTA_SERVER/api/ota/admin/logs?status=failed" \
 ```bash
 for device_id in {1..100}; do
   curl -s -X POST "$OTA_SERVER/api/ota/check" \
+    -H "Authorization: Bearer $DEVICE_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"device_id\": $device_id, \"device_type\": \"scales_bridge_tab5\", \"current_version\": \"1.0.0\", \"current_build\": 1}" \
     | jq . >> check_results.log

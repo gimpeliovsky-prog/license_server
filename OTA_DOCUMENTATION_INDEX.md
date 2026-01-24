@@ -38,7 +38,7 @@
    - Обзор системы (5 разделов)
    - Database models (Field descriptions)
    - Services documentation (10+ методов)
-   - API endpoints (3 public, 7 admin)
+   - API endpoints (3 device (JWT), 7 admin)
    - Configuration options
    - Security features
    - Performance optimization

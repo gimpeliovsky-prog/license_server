@@ -49,8 +49,10 @@ async def enforce_https(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(auth_router, prefix="/api", include_in_schema=False)
 app.include_router(status_router)
 app.include_router(ota_router)
+app.include_router(ota_router, prefix="/api", include_in_schema=False)
 app.include_router(erpnext_router)
 app.include_router(admin_router)
 app.include_router(web_router)

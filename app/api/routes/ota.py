@@ -1,14 +1,16 @@
 """OTA (Over-The-Air) update API routes."""
+import hashlib
+import hmac
 import logging
-from pathlib import Path
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_current_user
+from app.config import get_settings
+from app.api.deps import get_db, get_request_context, require_admin, RequestContext
 from app.models.firmware import Firmware
-from app.schemas.auth import UserSchema
 from app.schemas.ota import (
     FirmwareCreate,
     FirmwareResponse,
@@ -23,18 +25,20 @@ from app.services.ota import OTAService
 
 router = APIRouter(prefix="/ota", tags=["ota"])
 ota_service = OTAService(firmware_base_path="firmware")
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Device-facing OTA endpoints (public, require device auth)
+# Device-facing OTA endpoints (device JWT required; download protected via signed URL)
 # ============================================================================
 
 
 @router.post("/check", response_model=OTACheckResponse)
 async def check_firmware_update(
     request: OTACheckRequest,
+    context: RequestContext = Depends(get_request_context),
     db: Session = Depends(get_db),
 ) -> OTACheckResponse:
     """Check if firmware update is available for a device.
@@ -42,7 +46,20 @@ async def check_firmware_update(
     This endpoint is called by ESP32 devices to check for available updates.
     """
     try:
-        return ota_service.check_update_available(db, request)
+        if not context.token.device_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Device token required",
+            )
+        if str(request.device_id) != str(context.token.device_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Device mismatch",
+            )
+        response = ota_service.check_update_available(db, request)
+        if response.update_available and response.firmware_id:
+            response.download_url = _build_download_url(request.device_id, response.firmware_id)
+        return response
     except Exception as e:
         logger.error(f"Error checking firmware update: {e}")
         raise HTTPException(
@@ -54,6 +71,10 @@ async def check_firmware_update(
 @router.get("/download/{firmware_id}")
 async def download_firmware(
     firmware_id: int,
+    device_id: int | None = None,
+    expires: int | None = None,
+    sig: str | None = None,
+    context: RequestContext = Depends(get_request_context),
     db: Session = Depends(get_db),
 ) -> FileResponse:
     """Download firmware binary.
@@ -61,6 +82,36 @@ async def download_firmware(
     Device downloads the binary file for flashing.
     Returns the .bin file with proper headers for OTA.
     """
+    if not context.token.device_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device token required",
+        )
+    if device_id is not None and str(device_id) != str(context.token.device_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device mismatch",
+        )
+
+    if settings.ota_download_secret:
+        if device_id is None or expires is None or sig is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing download signature",
+            )
+        now = int(time.time())
+        if expires < now:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Download link expired",
+            )
+        expected_sig = _download_signature(device_id, firmware_id, expires)
+        if not hmac.compare_digest(expected_sig, sig):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid download signature",
+            )
+
     firmware = ota_service.get_firmware_for_download(db, firmware_id)
     if not firmware:
         raise HTTPException(
@@ -93,6 +144,7 @@ async def download_firmware(
 @router.post("/status")
 async def update_ota_status(
     status_update: OTAStatusUpdate,
+    context: RequestContext = Depends(get_request_context),
     db: Session = Depends(get_db),
 ) -> dict:
     """Device reports OTA operation status.
@@ -101,6 +153,16 @@ async def update_ota_status(
     Statuses: pending, downloading, installing, success, failed
     """
     try:
+        if not context.token.device_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Device token required",
+            )
+        if str(status_update.device_id) != str(context.token.device_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Device mismatch",
+            )
         # Find existing log or create new one
         from app.models.firmware import DeviceOTALog
 
@@ -139,10 +201,13 @@ async def update_ota_status(
 # ============================================================================
 
 
-@router.post("/admin/firmware", response_model=FirmwareDetailResponse)
+@router.post(
+    "/admin/firmware",
+    response_model=FirmwareDetailResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def create_firmware(
     firmware_create: FirmwareCreate,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> FirmwareDetailResponse:
     """Create a new firmware record (admin only).
@@ -209,12 +274,11 @@ async def create_firmware(
     return FirmwareDetailResponse.from_orm(firmware)
 
 
-@router.post("/admin/upload")
+@router.post("/admin/upload", dependencies=[Depends(require_admin)])
 async def upload_firmware_binary(
     file: UploadFile = File(...),
     device_type: str = None,
     version: str = None,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Upload a firmware binary file.
@@ -260,12 +324,15 @@ async def upload_firmware_binary(
         )
 
 
-@router.get("/admin/firmware", response_model=list[FirmwareResponse])
+@router.get(
+    "/admin/firmware",
+    response_model=list[FirmwareResponse],
+    dependencies=[Depends(require_admin)],
+)
 async def list_firmware(
     device_type: str = None,
     skip: int = 0,
     limit: int = 100,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[FirmwareResponse]:
     """List all firmware versions."""
@@ -281,10 +348,13 @@ async def list_firmware(
     return [FirmwareResponse.from_orm(f) for f in firmware_list]
 
 
-@router.get("/admin/firmware/{firmware_id}", response_model=FirmwareDetailResponse)
+@router.get(
+    "/admin/firmware/{firmware_id}",
+    response_model=FirmwareDetailResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def get_firmware(
     firmware_id: int,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> FirmwareDetailResponse:
     """Get firmware details by ID."""
@@ -298,11 +368,14 @@ async def get_firmware(
     return FirmwareDetailResponse.from_orm(firmware)
 
 
-@router.patch("/admin/firmware/{firmware_id}", response_model=FirmwareDetailResponse)
+@router.patch(
+    "/admin/firmware/{firmware_id}",
+    response_model=FirmwareDetailResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def update_firmware(
     firmware_id: int,
     firmware_update: FirmwareUpdate,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> FirmwareDetailResponse:
     """Update firmware metadata."""
@@ -323,10 +396,9 @@ async def update_firmware(
     return FirmwareDetailResponse.from_orm(firmware)
 
 
-@router.delete("/admin/firmware/{firmware_id}")
+@router.delete("/admin/firmware/{firmware_id}", dependencies=[Depends(require_admin)])
 async def delete_firmware(
     firmware_id: int,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Delete firmware (sets is_active=False instead of hard delete)."""
@@ -343,14 +415,17 @@ async def delete_firmware(
     return {"success": True, "message": "Firmware deactivated"}
 
 
-@router.get("/admin/logs", response_model=list[OTALogResponse])
+@router.get(
+    "/admin/logs",
+    response_model=list[OTALogResponse],
+    dependencies=[Depends(require_admin)],
+)
 async def get_ota_logs(
     device_id: int = None,
     firmware_id: int = None,
     status: str = None,
     skip: int = 0,
     limit: int = 100,
-    current_user: UserSchema = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[OTALogResponse]:
     """Get OTA operation logs."""
@@ -368,3 +443,18 @@ async def get_ota_logs(
     logs = query.order_by(DeviceOTALog.created_at.desc()).offset(skip).limit(limit).all()
 
     return [OTALogResponse.from_orm(log) for log in logs]
+# Signed download URL helpers
+def _download_signature(device_id: int, firmware_id: int, expires: int) -> str:
+    secret = settings.ota_download_secret
+    if not secret:
+        return ""
+    payload = f"{firmware_id}:{device_id}:{expires}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def _build_download_url(device_id: int, firmware_id: int) -> str:
+    if not settings.ota_download_secret:
+        return f"/api/ota/download/{firmware_id}"
+    expires = int(time.time()) + settings.ota_download_ttl_seconds
+    sig = _download_signature(device_id, firmware_id, expires)
+    return f"/api/ota/download/{firmware_id}?device_id={device_id}&expires={expires}&sig={sig}"

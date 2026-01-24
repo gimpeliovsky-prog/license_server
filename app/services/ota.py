@@ -40,22 +40,44 @@ class OTAService:
             OTACheckResponse with update details if available
         """
         # Find latest stable firmware for this device type
-        latest_firmware = (
+        firmwares = (
             db.query(Firmware)
             .filter(
                 Firmware.device_type == request.device_type,
                 Firmware.is_active == True,
                 Firmware.is_stable == True,
             )
-            .order_by(Firmware.version.desc(), Firmware.build_number.desc())
-            .first()
+            .all()
         )
+
+        latest_firmware = None
+        latest_version = None
+        for firmware in firmwares:
+            parsed = self._parse_version(firmware.version)
+            if parsed is None:
+                continue
+            if latest_firmware is None or (parsed, firmware.build_number) > (
+                latest_version,
+                latest_firmware.build_number,
+            ):
+                latest_firmware = firmware
+                latest_version = parsed
 
         if not latest_firmware:
             return OTACheckResponse(update_available=False)
 
         # Check if update is needed (version comparison)
-        if self._is_newer_version(latest_firmware.version, request.current_version):
+        current_version = self._parse_version(request.current_version)
+        if current_version is None:
+            logger.warning(f"Invalid current version format: {request.current_version}")
+            return OTACheckResponse(update_available=False)
+
+        is_newer_version = latest_version > current_version
+        is_newer_build = latest_version == current_version and (
+            latest_firmware.build_number > request.current_build
+        )
+
+        if is_newer_version or is_newer_build:
             # Check minimum version requirement
             if (
                 latest_firmware.min_current_version
@@ -220,6 +242,24 @@ class OTAService:
         except (ValueError, AttributeError):
             logger.warning(f"Invalid version format: {new_version} or {current_version}")
             return False
+
+    @staticmethod
+    def _parse_version(version: str) -> Optional[tuple[int, int, int]]:
+        """Parse semantic version to tuple.
+
+        Args:
+            version: Version string (e.g., "1.2.3")
+
+        Returns:
+            Tuple of ints or None if invalid
+        """
+        try:
+            parts = tuple(map(int, version.split(".")))
+            if len(parts) != 3:
+                return None
+            return parts
+        except (ValueError, AttributeError):
+            return None
 
     @staticmethod
     def _is_version_gte(version: str, min_version: str) -> bool:

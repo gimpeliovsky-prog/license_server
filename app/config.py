@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     admin_session_max_age_seconds: int = Field(default=8 * 60 * 60, alias="ADMIN_SESSION_MAX_AGE_SECONDS")
     admin_session_idle_seconds: int = Field(default=30 * 60, alias="ADMIN_SESSION_IDLE_SECONDS")
     admin_session_same_site: str = Field(default="lax", alias="ADMIN_SESSION_SAMESITE")
+    ota_download_secret: str | None = Field(default=None, alias="OTA_DOWNLOAD_SECRET")
+    ota_download_ttl_seconds: int = Field(default=10 * 60, alias="OTA_DOWNLOAD_TTL_SECONDS")
     erp_allowed_doctypes: list[str] = Field(
         default_factory=lambda: [
             "Pick List",

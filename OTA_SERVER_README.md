@@ -91,10 +91,12 @@ calculate_file_hash(file_path) -> str
 
 ## API Endpoints
 
-### Для устройств (public)
+### Для устройств (Bearer JWT required)
 
 #### `POST /api/ota/check`
 **Проверить наличие обновления**
+
+> Требуется `Authorization: Bearer <device_jwt>`
 
 Запрос:
 ```json
@@ -114,7 +116,7 @@ calculate_file_hash(file_path) -> str
   "version": "1.1.0",
   "build_number": 2,
   "description": "Bug fixes and improvements",
-  "download_url": "/api/ota/download/456",
+  "download_url": "/api/ota/download/456?device_id=123&expires=1700000000&sig=abc123...",
   "file_hash": "abc123...",
   "file_size": 524288
 }
@@ -131,6 +133,10 @@ calculate_file_hash(file_path) -> str
 **Скачать бинарник микропрограммы**
 
 Возвращает бинарный файл (`.bin`).
+Если включена подпись, требуются query params: `device_id`, `expires`, `sig`.
+Требуется `Authorization: Bearer <device_jwt>`.
+
+> Если задан `OTA_DOWNLOAD_SECRET`, download_url содержит подпись (expires + sig).
 
 **Заголовки ответа:**
 - `Content-Type: application/octet-stream`
@@ -141,6 +147,8 @@ calculate_file_hash(file_path) -> str
 
 #### `POST /api/ota/status`
 **Отправить статус операции обновления**
+
+> Требуется `Authorization: Bearer <device_jwt>`
 
 Запрос:
 ```json
@@ -176,7 +184,7 @@ calculate_file_hash(file_path) -> str
 curl -F "file=@firmware.bin" \
      -F "device_type=scales_bridge_tab5" \
      -F "version=1.1.0" \
-     -H "Authorization: Bearer TOKEN" \
+     -H "X-Admin-Token: ADMIN_TOKEN" \
      http://localhost:8000/api/ota/admin/upload
 ```
 
@@ -264,14 +272,14 @@ curl -F "file=@firmware.bin" \
    curl -F "file=@build/firmware.bin" \
         -F "device_type=scales_bridge_tab5" \
         -F "version=1.1.0" \
-        -H "Authorization: Bearer YOUR_TOKEN" \
+        -H "X-Admin-Token: YOUR_TOKEN" \
         http://your-server.com/api/ota/admin/upload
    ```
 
 3. **Зарегистрировать в БД:**
    ```bash
    curl -X POST http://your-server.com/api/ota/admin/firmware \
-        -H "Authorization: Bearer YOUR_TOKEN" \
+        -H "X-Admin-Token: YOUR_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{
           "device_type": "scales_bridge_tab5",
@@ -311,7 +319,7 @@ curl -F "file=@firmware.bin" \
    }
    
    // Скачать бинарник
-   GET /api/ota/download/456
+    GET /api/ota/download/456?device_id=123&expires=1700000000&sig=abc123...
    
    // Периодически обновлять прогресс
    POST /api/ota/status
@@ -380,7 +388,7 @@ from pathlib import Path
 
 # Параметры
 server_url = "http://localhost:8000"
-token = "your_jwt_token"
+admin_token = "your_admin_token"
 firmware_path = Path("firmware.bin")
 device_type = "scales_bridge_tab5"
 version = "1.1.0"
@@ -396,7 +404,7 @@ with open(firmware_path, "rb") as f:
         f"{server_url}/api/ota/admin/upload",
         files=files,
         data=data,
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"X-Admin-Token": admin_token},
     )
     upload_info = response.json()
     print(f"Uploaded: {upload_info}")
@@ -417,7 +425,7 @@ firmware_record = {
 response = requests.post(
     f"{server_url}/api/ota/admin/firmware",
     json=firmware_record,
-    headers={"Authorization": f"Bearer {token}"},
+    headers={"X-Admin-Token": admin_token},
 )
 firmware = response.json()
 print(f"Registered: {firmware}")
@@ -433,6 +441,7 @@ check_request = {
 response = requests.post(
     f"{server_url}/api/ota/check",
     json=check_request,
+    headers={"Authorization": "Bearer DEVICE_TOKEN"},
 )
 ota_check = response.json()
 print(f"Update available: {ota_check['update_available']}")
@@ -440,8 +449,9 @@ print(f"Update available: {ota_check['update_available']}")
 
 ## Безопасность
 
-- OTA эндпоинты для администраторов требуют JWT токена
-- Публичные эндпоинты для устройств открыты (предполагается прямая сеть между устройством и сервером)
+- OTA эндпоинты для администраторов требуют ADMIN_TOKEN
+- Эндпоинты для устройств требуют Bearer JWT (device token)
+- download_url содержит подпись и срок действия (expires)
 - Все файлы проверяются по SHA256 хешу
 - Поддерживается версионирование для отката при необходимости
 

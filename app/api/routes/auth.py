@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_client_ip, get_db, get_request_context, rate_limit_activate, rate_limit_refresh
@@ -17,15 +18,21 @@ def activate(payload: ActivateRequest, request: Request, db: Session = Depends(g
     if not raw_key:
         raise HTTPException(status_code=401, detail="License key invalid")
 
-    rate_limit_key = payload.company_code or f"license:{raw_key}"
+    company_code = payload.company_code.strip() if payload.company_code else None
+    company_code_norm = company_code.lower() if company_code else None
+    rate_limit_key = company_code_norm or f"license:{raw_key}"
     rate_limit_activate(request, rate_limit_key)
 
     now = utcnow()
     tenant: Tenant | None = None
     fingerprint = fingerprint_license_key(raw_key)
 
-    if payload.company_code:
-        tenant = db.query(Tenant).filter(Tenant.company_code == payload.company_code).first()
+    if company_code_norm:
+        tenant = (
+            db.query(Tenant)
+            .filter(func.lower(Tenant.company_code) == company_code_norm)
+            .first()
+        )
         if not tenant or tenant.status != TenantStatus.active:
             raise HTTPException(status_code=404, detail="Tenant not found")
 

@@ -30,21 +30,23 @@ OTA = Over-The-Air (обновление по воздуху)
    curl -F "file=@firmware.bin" \
         -F "device_type=scales_bridge_tab5" \
         -F "version=1.0.0" \
-        -H "Authorization: Bearer TOKEN" \
+        -H "X-Admin-Token: ADMIN_TOKEN" \
         http://server/api/ota/admin/upload
 
 3. Регистрируете в БД:
    curl -X POST http://server/api/ota/admin/firmware \
-        -H "Authorization: Bearer TOKEN" \
+        -H "X-Admin-Token: ADMIN_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{...firmware details...}'
 
 4. На ESP32 устройстве код проверяет:
    curl -X POST http://server/api/ota/check \
+        -H "Authorization: Bearer DEVICE_TOKEN" \
         -d '{"device_id": 123, "current_version": "0.9.0"}'
 
 5. Если есть новая версия:
-   curl http://server/api/ota/download/456 → firmware.bin
+  curl -H "Authorization: Bearer DEVICE_TOKEN" \
+       "http://server/api/ota/download/456?device_id=123&expires=1700000000&sig=abc123..." → firmware.bin
    → esp_ota_begin() → esp_ota_write() → esp_ota_end()
    → перезагрузка
 
@@ -72,7 +74,7 @@ idf.py build
 Шаг 3: Загрузить на OTA сервер
 -----------------------------------------------
 python c:\esp\projects\license_server\scripts\ota_management.py \
-  --token "YOUR_JWT_TOKEN" \
+  --admin-token "YOUR_ADMIN_TOKEN" \
   upload \
   --file build/firmware.bin \
   --device-type scales_bridge_tab5 \
@@ -84,6 +86,7 @@ python c:\esp\projects\license_server\scripts\ota_management.py \
 Шаг 4: Протестировать API
 -----------------------------------------------
 curl -X POST http://localhost:8000/api/ota/check \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -138,12 +141,12 @@ license_server/
 
 API ENDPOINTS
 
-Public (для устройств):
+Public (для устройств, требуется Bearer JWT):
   POST   /api/ota/check                  - Проверить наличие обновлений
   GET    /api/ota/download/{id}          - Скачать прошивку
   POST   /api/ota/status                 - Отправить статус
 
-Admin (требуется JWT токен):
+Admin (требуется ADMIN_TOKEN):
   POST   /api/ota/admin/upload           - Загрузить файл
   POST   /api/ota/admin/firmware         - Создать запись о версии
   GET    /api/ota/admin/firmware         - Список версий
@@ -151,6 +154,9 @@ Admin (требуется JWT токен):
   PATCH  /api/ota/admin/firmware/{id}    - Обновить метаданные
   DELETE /api/ota/admin/firmware/{id}    - Деактивировать версию
   GET    /api/ota/admin/logs             - Логи OTA операций
+
+Защита скачивания: задайте OTA_DOWNLOAD_SECRET в .env
+JWT устройства (DEVICE_TOKEN) получите через /activate и используйте для /api/ota/check и /api/ota/status
 
 ════════════════════════════════════════════════════════════════════════════
 
@@ -169,6 +175,7 @@ Admin (требуется JWT токен):
 
 Тестирование API:
   curl -X POST http://localhost:8000/api/ota/check \
+    -H "Authorization: Bearer DEVICE_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"device_id": 123, ...}'
 
@@ -221,7 +228,7 @@ A: Это сделает автоматически если старую вер
 ✓ Собрать первую прошивку перед загрузкой:
   idf.py build
 
-✓ Использовать JWT токен для admin endpoints
+✓ Использовать ADMIN_TOKEN для admin endpoints
 
 ✓ Хранить большие файлы прошивок на диске, не в БД
 

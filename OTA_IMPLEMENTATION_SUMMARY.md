@@ -18,7 +18,7 @@
 
 ### 2. API Routes (`app/api/routes/ota.py`)
 
-**Для устройств (public):**
+**Для устройств (Bearer JWT required):**
 - `POST /api/ota/check` - проверить доступность обновлений
 - `GET /api/ota/download/{firmware_id}` - скачать файл прошивки
 - `POST /api/ota/status` - отправить статус операции
@@ -96,7 +96,7 @@ python ota_management.py logs --device-id 123
 ## Ключевые особенности
 
 ✓ **Версионирование** - семантическое версионирование (MAJOR.MINOR.PATCH)
-✓ **Безопасность** - SHA256 верификация, JWT аутентификация для админов
+✓ **Безопасность** - SHA256 верификация, ADMIN_TOKEN аутентификация для админов, подписанные download_url
 ✓ **История** - полный логирование всех попыток обновления
 ✓ **Гибкость** - поддержка разных типов устройств
 ✓ **Минимальные требования** - можно обновлять только с определенной версии
@@ -116,7 +116,8 @@ python -m alembic upgrade head
 ### 3. Использовать management script
 ```bash
 python scripts/ota_management.py \
-  --token YOUR_JWT_TOKEN \
+  --admin-token YOUR_ADMIN_TOKEN \
+- Device JWT required for /api/ota/check and /api/ota/status
   upload \
   --file firmware.bin \
   --device-type scales_bridge_tab5 \
@@ -138,7 +139,8 @@ firmware/
 ## Безопасность
 
 - ✓ HTTPS рекомендуется
-- ✓ JWT токены для админ-эндпоинтов
+- ✓ ADMIN_TOKEN для админ-эндпоинтов
+- ✓ Подпись download_url (expires + sig)
 - ✓ SHA256 верификация всех файлов
 - ✓ Постепенный rollout с версионированием
 

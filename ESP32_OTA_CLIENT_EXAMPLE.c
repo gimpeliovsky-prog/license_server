@@ -16,6 +16,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <stdio.h>
 
 #define TAG "OTA_CLIENT"
 
@@ -30,16 +32,94 @@ typedef struct {
     const char *device_type;
     const char *current_version;
     uint32_t current_build;
+    const char *auth_token;  // JWT from /activate
 } ota_config_t;
 
 typedef struct {
     uint32_t firmware_id;
-    const char *version;
+    char version[32];
     uint32_t build_number;
-    const char *download_url;
-    const char *file_hash;
+    char download_url[512];
+    char file_hash[65];
     uint32_t file_size;
 } ota_firmware_info_t;
+
+static bool url_is_absolute(const char *url)
+{
+    if (!url) {
+        return false;
+    }
+    return (strncmp(url, "http://", 7) == 0) || (strncmp(url, "https://", 8) == 0);
+}
+
+static void build_url(char *out, size_t out_len, const char *base, const char *path)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    if (!base || !path) {
+        out[0] = '\0';
+        return;
+    }
+    size_t base_len = strlen(base);
+    if (base_len == 0) {
+        out[0] = '\0';
+        return;
+    }
+    bool base_ends = base_len > 0 && base[base_len - 1] == '/';
+    bool path_starts = path[0] == '/';
+
+    if (base_ends && path_starts) {
+        snprintf(out, out_len, "%.*s%s", (int)(base_len - 1), base, path);
+    } else if (!base_ends && !path_starts) {
+        snprintf(out, out_len, "%s/%s", base, path);
+    } else {
+        snprintf(out, out_len, "%s%s", base, path);
+    }
+}
+
+static void set_auth_header(esp_http_client_handle_t client, const ota_config_t *config)
+{
+    if (!config || !config->auth_token || config->auth_token[0] == '\0') {
+        return;
+    }
+    char header[512];
+    snprintf(header, sizeof(header), "Bearer %s", config->auth_token);
+    esp_http_client_set_header(client, "Authorization", header);
+}
+
+static esp_err_t read_response_body(esp_http_client_handle_t client, char **out_buf, int *out_len)
+{
+    const int max_size = 8 * 1024;
+    char *buffer = malloc(max_size + 1);
+    if (!buffer) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    int total = 0;
+    while (1) {
+        int bytes = esp_http_client_read(client, buffer + total, max_size - total);
+        if (bytes < 0) {
+            free(buffer);
+            return ESP_FAIL;
+        }
+        if (bytes == 0) {
+            break;
+        }
+        total += bytes;
+        if (total >= max_size) {
+            free(buffer);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    buffer[total] = '\0';
+    *out_buf = buffer;
+    if (out_len) {
+        *out_len = total;
+    }
+    return ESP_OK;
+}
 
 /**
  * Отправить статус OTA операции на сервер
@@ -68,8 +148,11 @@ static esp_err_t ota_report_status(
     cJSON_Delete(request);
     
     // Отправить на сервер
+    char status_url[256];
+    build_url(status_url, sizeof(status_url), config->server_url, "/api/ota/status");
+
     esp_http_client_config_t http_config = {
-        .url = OTA_SERVER_URL "/api/ota/status",
+        .url = status_url,
         .method = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 10000,
@@ -77,6 +160,7 @@ static esp_err_t ota_report_status(
     
     esp_http_client_handle_t client = esp_http_client_init(&http_config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    set_auth_header(client, config);
     esp_http_client_set_post_field(client, request_str, strlen(request_str));
     
     esp_err_t err = esp_http_client_perform(client);
@@ -118,8 +202,11 @@ static esp_err_t ota_check_for_updates(
     cJSON_Delete(request);
     
     // Отправить запрос
+    char check_url[256];
+    build_url(check_url, sizeof(check_url), config->server_url, "/api/ota/check");
+
     esp_http_client_config_t http_config = {
-        .url = OTA_SERVER_URL "/api/ota/check",
+        .url = check_url,
         .method = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
@@ -127,6 +214,7 @@ static esp_err_t ota_check_for_updates(
     
     esp_http_client_handle_t client = esp_http_client_init(&http_config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    set_auth_header(client, config);
     esp_http_client_set_post_field(client, request_str, strlen(request_str));
     
     esp_err_t err = esp_http_client_perform(client);
@@ -135,25 +223,64 @@ static esp_err_t ota_check_for_updates(
         int status_code = esp_http_client_get_status_code(client);
         
         if (status_code == 200) {
-            // Прочитать ответ
-            int content_length = esp_http_client_get_content_length(client);
-            char *response_buffer = malloc(content_length + 1);
-            
-            int bytes_read = esp_http_client_read_response(client, (uint8_t *)response_buffer, content_length);
-            response_buffer[bytes_read] = '\0';
-            
-            // Парсить JSON ответ
+            char *response_buffer = NULL;
+            int response_len = 0;
+            if (read_response_body(client, &response_buffer, &response_len) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to read response body");
+                esp_http_client_cleanup(client);
+                free(request_str);
+                return ESP_FAIL;
+            }
+
             cJSON *response = cJSON_Parse(response_buffer);
-            
+            if (!response) {
+                ESP_LOGE(TAG, "Invalid JSON response");
+                free(response_buffer);
+                esp_http_client_cleanup(client);
+                free(request_str);
+                return ESP_FAIL;
+            }
+
             cJSON *update_available = cJSON_GetObjectItemCaseInsensitive(response, "update_available");
-            if (update_available && update_available->type == cJSON_True) {
-                firmware_info->firmware_id = cJSON_GetObjectItem(response, "firmware_id")->valueint;
-                firmware_info->version = cJSON_GetObjectItem(response, "version")->valuestring;
-                firmware_info->build_number = cJSON_GetObjectItem(response, "build_number")->valueint;
-                firmware_info->download_url = cJSON_GetObjectItem(response, "download_url")->valuestring;
-                firmware_info->file_hash = cJSON_GetObjectItem(response, "file_hash")->valuestring;
-                firmware_info->file_size = cJSON_GetObjectItem(response, "file_size")->valueint;
-                
+            if (update_available && cJSON_IsTrue(update_available)) {
+                cJSON *firmware_id = cJSON_GetObjectItem(response, "firmware_id");
+                cJSON *version = cJSON_GetObjectItem(response, "version");
+                cJSON *build_number = cJSON_GetObjectItem(response, "build_number");
+                cJSON *download_url = cJSON_GetObjectItem(response, "download_url");
+                cJSON *file_hash = cJSON_GetObjectItem(response, "file_hash");
+                cJSON *file_size = cJSON_GetObjectItem(response, "file_size");
+
+                if (!firmware_id || !version || !build_number || !download_url || !file_hash || !file_size) {
+                    ESP_LOGE(TAG, "Malformed OTA response");
+                    cJSON_Delete(response);
+                    free(response_buffer);
+                    esp_http_client_cleanup(client);
+                    free(request_str);
+                    return ESP_FAIL;
+                }
+
+                firmware_info->firmware_id = (uint32_t)firmware_id->valueint;
+                firmware_info->build_number = (uint32_t)build_number->valueint;
+                firmware_info->file_size = (uint32_t)file_size->valueint;
+                snprintf(firmware_info->version, sizeof(firmware_info->version), "%s", version->valuestring);
+                snprintf(firmware_info->file_hash, sizeof(firmware_info->file_hash), "%s", file_hash->valuestring);
+
+                if (url_is_absolute(download_url->valuestring)) {
+                    snprintf(
+                        firmware_info->download_url,
+                        sizeof(firmware_info->download_url),
+                        "%s",
+                        download_url->valuestring
+                    );
+                } else {
+                    build_url(
+                        firmware_info->download_url,
+                        sizeof(firmware_info->download_url),
+                        config->server_url,
+                        download_url->valuestring
+                    );
+                }
+
                 ESP_LOGI(TAG, "Update available: v%s (build %d)", firmware_info->version, firmware_info->build_number);
                 cJSON_Delete(response);
                 free(response_buffer);
@@ -163,7 +290,7 @@ static esp_err_t ota_check_for_updates(
             } else {
                 ESP_LOGI(TAG, "No updates available");
             }
-            
+
             cJSON_Delete(response);
             free(response_buffer);
         } else {
@@ -217,6 +344,7 @@ static esp_err_t ota_download_and_install(
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&http_config);
+    set_auth_header(client, config);
     
     err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
@@ -348,6 +476,7 @@ void app_main_ota_example(void)
         .device_type = OTA_DEVICE_TYPE,
         .current_version = "1.0.0",  // Получить из версии прошивки
         .current_build = 1,
+        .auth_token = "YOUR_DEVICE_JWT",  // Получить через /activate
     };
     
     // Получить текущую версию из приложения

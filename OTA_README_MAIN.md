@@ -9,7 +9,7 @@
 - ✓ Проверять доступность обновлений на устройствах
 - ✓ Отслеживать процесс обновления на каждом устройстве
 - ✓ Хранить историю всех операций обновления
-- ✓ Контролировать безопасность через JWT и SHA256 верификацию
+- ✓ Контролировать безопасность через ADMIN_TOKEN, подписанные download_url и SHA256 верификацию
 - ✓ Поддерживать разные типы устройств с семантическим версионированием
 
 ## 🚀 Quick Start
@@ -25,13 +25,13 @@ python scripts/ota_management.py upload \
   --file firmware.bin \
   --device-type scales_bridge_tab5 \
   --version 1.0.0 \
-  --token YOUR_JWT_TOKEN
+  --admin-token YOUR_ADMIN_TOKEN
 ```
 
 ### 3. Зарегистрировать версию
 ```bash
 curl -X POST http://localhost:8000/api/ota/admin/firmware \
-  -H "Authorization: Bearer TOKEN" \
+  -H "X-Admin-Token: ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{...firmware details...}'
 ```
@@ -126,7 +126,7 @@ service.update_ota_status(db, log_id, status_update)
 
 ### API Endpoints
 
-#### Public (Device) Endpoints
+#### Device Endpoints (Bearer JWT required)
 ```
 POST   /api/ota/check                    # Check for updates
 GET    /api/ota/download/{firmware_id}   # Download binary
@@ -183,7 +183,7 @@ GET    /api/ota/admin/logs               # OTA logs
 │                        ESP32 Device                         │
 │                                                             │
 │  2. Download firmware                                       │
-│     GET /api/ota/download/456                              │
+│     GET download_url (signed)                              │
 │  3. Report status                                           │
 │     POST /api/ota/status {status: downloading, ...}         │
 │  4. Install and verify                                      │
@@ -217,7 +217,7 @@ python scripts/ota_management.py upload \
   --file firmware.bin \
   --device-type scales_bridge_tab5 \
   --version 1.0.0 \
-  --token JWT_TOKEN
+  --admin-token ADMIN_TOKEN
 
 # Register firmware
 python scripts/ota_management.py register \
@@ -227,23 +227,25 @@ python scripts/ota_management.py register \
   --file-size 524288 \
   --file-hash abc123... \
   --binary-path scales_bridge_tab5/v1.0.0.bin \
-  --token JWT_TOKEN
+  --admin-token ADMIN_TOKEN
 
 # List firmware
 python scripts/ota_management.py list \
   --device-type scales_bridge_tab5 \
-  --token JWT_TOKEN
+  --admin-token ADMIN_TOKEN
 
 # View OTA logs
 python scripts/ota_management.py logs \
   --device-id 123 \
-  --token JWT_TOKEN
+  --admin-token ADMIN_TOKEN
 ```
 
 ## 🔐 Security Features
 
-- ✓ **JWT Authentication** for admin endpoints
+- ✓ **ADMIN_TOKEN authentication** for admin endpoints
+- ✓ **Device JWT required** for /api/ota/check and /api/ota/status
 - ✓ **SHA256 Verification** of all files
+- ✓ **Signed download URLs** (expires + signature)
 - ✓ **Semantic Versioning** validation
 - ✓ **Version Constraints** (min_current_version)
 - ✓ **HTTPS Support** (configurable)
@@ -287,6 +289,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```bash
 curl http://localhost:8000/api/ota/check \
   -X POST \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"device_id": 1, "device_type": "scales_bridge_tab5", "current_version": "1.0.0", "current_build": 1}'
 ```
@@ -300,14 +303,14 @@ curl http://localhost:8000/api/ota/check \
 curl -F "file=@firmware.bin" \
      -F "device_type=scales_bridge_tab5" \
      -F "version=1.1.0" \
-     -H "Authorization: Bearer TOKEN" \
+     -H "X-Admin-Token: ADMIN_TOKEN" \
      http://server:8000/api/ota/admin/upload
 ```
 
 **Check deployment status:**
 ```bash
 curl http://server:8000/api/ota/admin/logs?status=success \
-     -H "Authorization: Bearer TOKEN"
+     -H "X-Admin-Token: ADMIN_TOKEN"
 ```
 
 ### For ESP32 Devices
@@ -350,7 +353,7 @@ python -m alembic upgrade head
 ## 🔗 Integration Points
 
 ### With existing license_server
-- Uses existing JWT authentication
+- Uses existing ADMIN_TOKEN authentication
 - Stores in same database
 - Follows same API structure
 - No conflicts with other modules

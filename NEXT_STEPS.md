@@ -52,12 +52,12 @@ sha256sum build/*.bin
 ```bash
 cd /path/to/license_server
 
-# Получить JWT токен (если не имеете)
-# Через веб-интерфейс или API
+# Убедитесь, что ADMIN_TOKEN и OTA_DOWNLOAD_SECRET заданы в .env
+# Используется заголовок X-Admin-Token для админ-эндпоинтов
 
 python scripts/ota_management.py \
   --server http://localhost:8000 \
-  --token "YOUR_JWT_TOKEN_HERE" \
+  --admin-token "YOUR_ADMIN_TOKEN_HERE" \
   upload \
   --file /path/to/scales_bridge/tab5/build/firmware.bin \
   --device-type scales_bridge_tab5 \
@@ -71,7 +71,7 @@ python scripts/ota_management.py \
 curl -F "file=@build/firmware.bin" \
      -F "device_type=scales_bridge_tab5" \
      -F "version=1.0.0" \
-     -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+     -H "X-Admin-Token: YOUR_ADMIN_TOKEN" \
      http://localhost:8000/api/ota/admin/upload
 
 # Сохранить результат (особенно file_hash)
@@ -86,7 +86,7 @@ curl -F "file=@build/firmware.bin" \
 
 # 2. Зарегистрировать в БД
 curl -X POST http://localhost:8000/api/ota/admin/firmware \
-     -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+     -H "X-Admin-Token: YOUR_ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
        "device_type": "scales_bridge_tab5",
@@ -102,7 +102,7 @@ curl -X POST http://localhost:8000/api/ota/admin/firmware \
 
 # 3. Пометить как стабильную (когда протестирована)
 curl -X PATCH http://localhost:8000/api/ota/admin/firmware/1 \
-     -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+     -H "X-Admin-Token: YOUR_ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"is_stable": true}'
 ```
@@ -111,8 +111,11 @@ curl -X PATCH http://localhost:8000/api/ota/admin/firmware/1 \
 
 ### Проверить наличие обновлений (как будет делать ESP32)
 
+Получите JWT устройства через `/activate` и сохраните как `DEVICE_TOKEN`.
+
 ```bash
 curl -X POST http://localhost:8000/api/ota/check \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -128,7 +131,7 @@ curl -X POST http://localhost:8000/api/ota/check \
 #   "version": "1.0.0",
 #   "build_number": 1,
 #   "description": "Initial release - version 1.0.0",
-#   "download_url": "/api/ota/download/1",
+#   "download_url": "/api/ota/download/1?device_id=123&expires=1700000000&sig=abc123...",
 #   "file_hash": "abc123def456...",
 #   "file_size": 456789
 # }
@@ -137,7 +140,8 @@ curl -X POST http://localhost:8000/api/ota/check \
 ### Скачать прошивку
 
 ```bash
-curl http://localhost:8000/api/ota/download/1 \
+curl -H "Authorization: Bearer DEVICE_TOKEN" \
+  "http://localhost:8000/api/ota/download/1?device_id=123&expires=1700000000&sig=abc123..." \
   -o firmware_downloaded.bin
 
 # Проверить
@@ -150,6 +154,7 @@ sha256sum firmware_downloaded.bin
 
 ```bash
 curl -X POST http://localhost:8000/api/ota/status \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -242,7 +247,7 @@ void ota_check_task(void *param) {
 ```bash
 # Проверить логи на сервере
 curl http://localhost:8000/api/ota/admin/logs \
-  -H "Authorization: Bearer TOKEN" | jq '.[] | {device_id, status, created_at}'
+  -H "X-Admin-Token: ADMIN_TOKEN" | jq '.[] | {device_id, status, created_at}'
 
 # Должны быть записи с status: downloading → success
 ```
@@ -254,6 +259,7 @@ curl http://localhost:8000/api/ota/admin/logs \
 ```bash
 # На устройстве выполнить:
 curl -X POST http://localhost:8000/api/ota/check \
+  -H "Authorization: Bearer DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": 123,
@@ -294,7 +300,7 @@ python scripts/ota_management.py upload \
   --file build/firmware.bin \
   --device-type scales_bridge_tab5 \
   --version 1.1.0 \
-  --token TOKEN
+  --admin-token ADMIN_TOKEN
 
 # После тестирования пометить как стабильную
 python scripts/ota_management.py update \
@@ -424,7 +430,7 @@ sha256sum firmware/scales_bridge_tab5/v1.0.0.bin
 4. Протестируйте API вручную:
    ```bash
    curl http://localhost:8000/api/ota/admin/firmware \
-     -H "Authorization: Bearer TOKEN"
+     -H "X-Admin-Token: ADMIN_TOKEN"
    ```
 
 ---

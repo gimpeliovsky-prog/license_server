@@ -75,7 +75,7 @@ class OTACheckResponse(BaseModel):
     version: Optional[str] = None
     build_number: Optional[int] = None
     description: Optional[str] = None
-    download_url: Optional[str] = None  # Full URL to download endpoint
+    download_url: Optional[str] = None  # Signed download URL (may include query params)
     file_hash: Optional[str] = None  # For device to verify integrity
     file_size: Optional[int] = None  # Size in bytes
 

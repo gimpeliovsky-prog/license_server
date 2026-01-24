@@ -23,17 +23,17 @@ logger = logging.getLogger(__name__)
 class OTAManager:
     """Manager for OTA operations."""
 
-    def __init__(self, server_url: str, token: str):
+    def __init__(self, server_url: str, admin_token: str):
         """Initialize OTA manager.
         
         Args:
             server_url: Base URL of OTA server
-            token: JWT authentication token
+            admin_token: Admin token (X-Admin-Token)
         """
         self.server_url = server_url.rstrip('/')
-        self.token = token
+        self.admin_token = admin_token
         self.headers = {
-            'Authorization': f'Bearer {token}',
+            'X-Admin-Token': admin_token,
             'Content-Type': 'application/json'
         }
 
@@ -70,7 +70,7 @@ class OTAManager:
                 f"{self.server_url}/api/ota/admin/upload",
                 files=files,
                 data=data,
-                headers={'Authorization': f'Bearer {self.token}'}  # No JSON header for multipart
+                headers={'X-Admin-Token': self.admin_token}  # No JSON header for multipart
             )
 
         if response.status_code != 200:
@@ -330,9 +330,11 @@ def main():
         help='OTA server URL (default: http://localhost:8000)'
     )
     parser.add_argument(
+        '--admin-token',
         '--token',
+        dest='admin_token',
         required=True,
-        help='JWT authentication token'
+        help='Admin token (X-Admin-Token)'
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
@@ -390,7 +392,7 @@ def main():
         return 1
 
     try:
-        manager = OTAManager(args.server, args.token)
+        manager = OTAManager(args.server, args.admin_token)
 
         if args.command == 'upload':
             result = manager.upload_firmware(
