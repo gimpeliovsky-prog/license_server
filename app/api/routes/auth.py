@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_client_ip, get_db, get_request_context, rate_limit_activate, rate_limit_refresh
-from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, OTAAccess, Tenant, TenantStatus
 from app.schemas import ActivateRequest, TokenResponse
 from app.services.auth import create_access_token
 from app.services.license import fingerprint_license_key, verify_license_key_flexible
@@ -18,16 +18,39 @@ def activate(payload: ActivateRequest, request: Request, db: Session = Depends(g
     if not raw_key:
         raise HTTPException(status_code=401, detail="License key invalid")
 
+    ota_access = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
+
     company_code = payload.company_code.strip() if payload.company_code else None
     company_code_norm = company_code.lower() if company_code else None
-    rate_limit_key = company_code_norm or f"license:{raw_key}"
+    rate_limit_key = "ota_access" if ota_access else (company_code_norm or f"license:{raw_key}")
     rate_limit_activate(request, rate_limit_key)
 
     now = utcnow()
     tenant: Tenant | None = None
     fingerprint = fingerprint_license_key(raw_key)
 
-    if company_code_norm:
+    if ota_access:
+        tenant = db.query(Tenant).filter(Tenant.id == ota_access.tenant_id).first()
+        if not tenant or tenant.status != TenantStatus.active:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        if tenant.subscription_expires_at < now:
+            raise HTTPException(status_code=403, detail="Subscription expired")
+
+        matched_key = (
+            db.query(LicenseKey)
+            .filter(LicenseKey.id == ota_access.license_key_id)
+            .first()
+        )
+        if not matched_key or matched_key.status != LicenseKeyStatus.active:
+            raise HTTPException(status_code=401, detail="License key invalid")
+
+        if not verify_license_key_flexible(raw_key, matched_key.hashed_key):
+            raise HTTPException(status_code=401, detail="License key invalid")
+
+        if fingerprint and not matched_key.fingerprint:
+            matched_key.fingerprint = fingerprint
+    elif company_code_norm:
         tenant = (
             db.query(Tenant)
             .filter(func.lower(Tenant.company_code) == company_code_norm)

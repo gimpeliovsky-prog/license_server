@@ -15,6 +15,7 @@
   <table>
     <tbody>
       <tr><th>Company code</th><td>{{ tenant.company_code }}</td></tr>
+      <tr><th>Company name</th><td>{{ tenant.company_name or "-" }}</td></tr>
       <tr><th>Status</th><td>{{ tenant.status.value }}</td></tr>
       <tr><th>Subscription expires</th><td>{{ tenant.subscription_expires_at.isoformat() }}</td></tr>
       <tr><th>ERPNext URL</th><td>{{ tenant.erpnext_url }}</td></tr>
@@ -32,7 +33,7 @@
       <option value="{{ status }}" {% if status == tenant.status.value %}selected{% endif %}>{{ status }}</option>
       {% endfor %}
     </select>
-    <button type="submit">Update</button>
+    <button type="submit" class="button-compact">Update</button>
   </form>
 </div>
 
@@ -51,7 +52,7 @@
       </div>
     </div>
     <div style="margin-top: 12px;">
-      <button type="submit">Update subscription</button>
+      <button type="submit" class="button-block">Update subscription</button>
     </div>
   </form>
 </div>
@@ -75,7 +76,7 @@
       </div>
     </div>
     <div style="margin-top: 12px;">
-      <button type="submit">Create license</button>
+      <button type="submit" class="button-block">Create license</button>
     </div>
   </form>
 </div>
@@ -107,12 +108,12 @@
               <option value="{{ status }}" {% if status == key.status.value %}selected{% endif %}>{{ status }}</option>
               {% endfor %}
             </select>
-            <button type="submit">Save</button>
+            <button type="submit" class="button-compact">Save</button>
           </form>
           <form method="post" action="/admin-ui/licenses/{{ key.id }}/delete" class="inline" onsubmit="return confirm('Delete this license key?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="company_code" value="{{ tenant.company_code }}">
-            <button type="submit" class="button-danger">Delete</button>
+            <button type="submit" class="button-danger button-compact">Delete</button>
           </form>
         </td>
       </tr>
@@ -128,49 +129,7 @@
   <h2>Delete tenant</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/delete" onsubmit="return confirm('Delete tenant and all related data?');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="button-danger">Delete tenant</button>
+    <button type="submit" class="button-danger button-block">Delete tenant</button>
   </form>
-</div>
-
-<div class="panel">
-  <h2>Devices</h2>
-  {% if devices %}
-  <table>
-    <thead>
-      <tr>
-        <th>Device ID</th>
-        <th>Revoked</th>
-        <th>Last seen</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for device in devices %}
-      <tr>
-        <td>{{ device.device_id }}</td>
-        <td>{{ device.revoked }}</td>
-        <td>{% if device.last_seen %}{{ device.last_seen.isoformat() }}{% else %}-{% endif %}</td>
-        <td>
-          {% if device.revoked %}
-          <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="revoked" value="false">
-            <button type="submit" class="button-secondary">Unrevoke</button>
-          </form>
-          {% else %}
-          <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/devices/{{ device.device_id }}" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="revoked" value="true">
-            <button type="submit" class="button-danger">Revoke</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">No devices.</p>
-  {% endif %}
 </div>
 {% endblock %}

@@ -26,6 +26,11 @@ def main() -> int:
         if not tenant:
             print("Tenant not found")
             return 1
+        if fingerprint:
+            existing = db.query(LicenseKey).filter(LicenseKey.fingerprint == fingerprint).first()
+            if existing:
+                print("License key already exists")
+                return 1
 
         license_entry = LicenseKey(
             tenant_id=tenant.id,

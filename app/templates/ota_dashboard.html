@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>OTA Dashboard</h1>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Firmware catalog</h2>
+    <div style="font-size: 28px; font-weight: 600;">{{ total_firmwares }}</div>
+    <p class="muted">Active: {{ active_firmwares }} · Stable: {{ stable_firmwares }}</p>
+  </div>
+  <div class="panel">
+    <h2>OTA activity</h2>
+    <div style="font-size: 28px; font-weight: 600;">{{ total_logs }}</div>
+    <p class="muted">Failed updates: {{ failed_logs }}</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Update trigger</h2>
+  <p class="muted">Updates are pulled manually by the device (user presses the update button in the device menu). No forced push from the server.</p>
+</div>
+{% endblock %}

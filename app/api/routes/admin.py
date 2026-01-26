@@ -50,6 +50,7 @@ def serialize_tenant(tenant: Tenant) -> TenantResponse:
     return TenantResponse(
         id=tenant.id,
         company_code=tenant.company_code,
+        company_name=tenant.company_name,
         erpnext_url=tenant.erpnext_url,
         status=tenant.status.value,
         subscription_expires_at=tenant.subscription_expires_at,
@@ -80,6 +81,7 @@ def create_tenant(payload: TenantCreateRequest, db: Session = Depends(get_db)) -
 
     tenant = Tenant(
         company_code=payload.company_code,
+        company_name=(payload.company_name or "").strip() or None,
         erpnext_url=normalized_url,
         api_key=payload.api_key,
         api_secret=payload.api_secret,
@@ -169,6 +171,10 @@ def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db))
     if not license_key:
         raise HTTPException(status_code=400, detail="License key invalid")
     fingerprint = fingerprint_license_key(license_key) or None
+    if fingerprint:
+        existing = db.query(LicenseKey).filter(LicenseKey.fingerprint == fingerprint).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="License key already exists")
 
     license_entry = LicenseKey(
         tenant_id=tenant.id,

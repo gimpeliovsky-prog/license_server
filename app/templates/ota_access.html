@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>ESP32 Access</h1>
+
+<div class="panel">
+  <h2>Global tenant + license</h2>
+  <p class="muted">All ESP32 devices will authenticate against this single tenant/license pair.</p>
+  <form method="post" action="/admin-ui/ota/access">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="grid-2">
+      <div>
+        <label>Tenant</label>
+        <select name="tenant_id">
+          <option value="">Select tenant</option>
+          {% for tenant in tenants %}
+          <option value="{{ tenant.id }}" {% if current_tenant_id and tenant.id == current_tenant_id %}selected{% endif %}>
+            {{ tenant.company_code }}{% if tenant.company_name %} · {{ tenant.company_name }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>License key</label>
+        <select name="license_key_id">
+          <option value="">Select license</option>
+          {% for key in license_keys %}
+          <option value="{{ key.id }}" {% if current_license_id and key.id == current_license_id %}selected{% endif %}>
+            {{ key.tenant.company_code }} · {{ key.id }} ({{ key.status.value }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-block">Save access settings</button>
+    </div>
+  </form>
+</div>
+
+{% if current_setting %}
+<div class="panel">
+  <h2>Current setting</h2>
+  <table>
+    <tbody>
+      <tr><th>Tenant</th><td>{{ current_setting.tenant.company_code }}{% if current_setting.tenant.company_name %} · {{ current_setting.tenant.company_name }}{% endif %}</td></tr>
+      <tr><th>License</th><td style="font-family: monospace;">{{ current_setting.license_key.id }}</td></tr>
+      <tr><th>Updated</th><td>{{ current_setting.updated_at.isoformat() }}</td></tr>
+    </tbody>
+  </table>
+  <form method="post" action="/admin-ui/ota/access/clear" style="margin-top: 12px;" onsubmit="return confirm('Clear global ESP32 access?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="button-danger button-block">Clear access</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

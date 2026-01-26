@@ -153,6 +153,11 @@ def create_license(db, company_code: str, key: str | None, status: str) -> int:
         print("License key invalid")
         return 1
     fingerprint = fingerprint_license_key(license_key) or None
+    if fingerprint:
+        existing = db.query(LicenseKey).filter(LicenseKey.fingerprint == fingerprint).first()
+        if existing:
+            print("License key already exists")
+            return 1
     license_entry = LicenseKey(
         tenant_id=tenant.id,
         hashed_key=hash_license_key(license_key),

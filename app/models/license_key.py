@@ -19,7 +19,7 @@ class LicenseKey(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hashed_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
     status: Mapped[LicenseKeyStatus] = mapped_column(
         Enum(LicenseKeyStatus), nullable=False, default=LicenseKeyStatus.active

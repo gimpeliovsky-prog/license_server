@@ -9,7 +9,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="inline">
       <input type="text" name="value" placeholder="Pick List" required>
-      <button type="submit">Add doctype</button>
+      <button type="submit" class="button-compact">Add doctype</button>
     </div>
   </form>
   {% if doctypes %}
@@ -29,7 +29,7 @@
         <td>
           <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button-danger" type="submit">Delete</button>
+            <button class="button-danger button-compact" type="submit">Delete</button>
           </form>
         </td>
       </tr>
@@ -47,7 +47,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="inline">
       <input type="text" name="value" placeholder="GET" required>
-      <button type="submit">Add method</button>
+      <button type="submit" class="button-compact">Add method</button>
     </div>
   </form>
   {% if methods %}
@@ -67,7 +67,7 @@
         <td>
           <form method="post" action="/admin-ui/erp-allowlist/{{ entry.id }}/delete">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button-danger" type="submit">Delete</button>
+            <button class="button-danger button-compact" type="submit">Delete</button>
           </form>
         </td>
       </tr>
@@ -86,7 +86,7 @@
   </p>
   <form method="post" action="/admin-ui/erp-allowlist/seed">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button class="button-secondary" type="submit">Load defaults into DB</button>
+    <button class="button-secondary button-compact" type="submit">Load defaults into DB</button>
   </form>
   {% if defaults_doctypes or defaults_methods %}
   <div class="grid-2" style="margin-top: 12px;">

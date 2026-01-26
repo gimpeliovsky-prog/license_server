@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Licenses</h1>
+
+<div class="panel">
+  <h2>All license keys</h2>
+  {% if licenses %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Tenant</th>
+        <th>Company name</th>
+        <th>Status</th>
+        <th>Fingerprint</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for key in licenses %}
+      <tr>
+        <td style="font-family: monospace;">{{ key.id }}</td>
+        <td><a href="/admin-ui/tenants/{{ key.tenant.company_code }}">{{ key.tenant.company_code }}</a></td>
+        <td>{{ key.tenant.company_name or "-" }}</td>
+        <td>{{ key.status.value }}</td>
+        <td style="font-family: monospace;">{{ key.fingerprint or "-" }}</td>
+        <td>{{ key.created_at.isoformat() }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No license keys.</p>
+  {% endif %}
+</div>
+{% endblock %}

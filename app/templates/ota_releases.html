@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Releases</h1>
+
+<div class="panel">
+  <h2>Upload firmware</h2>
+  <p class="muted">Two hardware families are supported. Use the matching form for your build.</p>
+  <div class="grid-2" style="margin-top: 12px;">
+    <div class="panel" style="margin: 0;">
+      <h3>ESP32-S3</h3>
+      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="device_type" value="esp32s3">
+        <div class="grid-2">
+          <div>
+            <label>Version (semver)</label>
+            <input type="text" name="version" placeholder="1.2.0" required>
+          </div>
+          <div>
+            <label>Build number</label>
+            <input type="number" name="build_number" min="1" placeholder="1" required>
+          </div>
+          <div>
+            <label>Min current version (optional)</label>
+            <input type="text" name="min_current_version" placeholder="1.0.0">
+          </div>
+          <div>
+            <label>Firmware file (.bin)</label>
+            <input type="file" name="firmware_file" accept=".bin" required>
+          </div>
+          <div>
+            <label>Stable release</label>
+            <select name="is_stable">
+              <option value="">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label>Description</label>
+            <input type="text" name="description" placeholder="Short summary">
+          </div>
+          <div>
+            <label>Release notes</label>
+            <input type="text" name="release_notes" placeholder="Key changes">
+          </div>
+        </div>
+        <div style="margin-top: 12px;">
+          <button type="submit" class="button-block">Upload ESP32-S3</button>
+        </div>
+      </form>
+    </div>
+    <div class="panel" style="margin: 0;">
+      <h3>ESP32-P4</h3>
+      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="device_type" value="esp32p4">
+        <div class="grid-2">
+          <div>
+            <label>Version (semver)</label>
+            <input type="text" name="version" placeholder="1.2.0" required>
+          </div>
+          <div>
+            <label>Build number</label>
+            <input type="number" name="build_number" min="1" placeholder="1" required>
+          </div>
+          <div>
+            <label>Min current version (optional)</label>
+            <input type="text" name="min_current_version" placeholder="1.0.0">
+          </div>
+          <div>
+            <label>Firmware file (.bin)</label>
+            <input type="file" name="firmware_file" accept=".bin" required>
+          </div>
+          <div>
+            <label>Stable release</label>
+            <select name="is_stable">
+              <option value="">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label>Description</label>
+            <input type="text" name="description" placeholder="Short summary">
+          </div>
+          <div>
+            <label>Release notes</label>
+            <input type="text" name="release_notes" placeholder="Key changes">
+          </div>
+        </div>
+        <div style="margin-top: 12px;">
+          <button type="submit" class="button-block">Upload ESP32-P4</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Firmware catalog</h2>
+  <form method="get" action="/admin-ui/ota/releases" class="inline" style="margin-bottom: 12px;">
+    <label>Device type filter</label>
+    <select name="device_type">
+      <option value="">All</option>
+      {% for dtype in device_types %}
+      <option value="{{ dtype }}" {% if dtype == selected_device_type %}selected{% endif %}>{{ dtype }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="button-compact">Filter</button>
+  </form>
+  {% if firmwares %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Device type</th>
+        <th>Version</th>
+        <th>Build</th>
+        <th>Stable</th>
+        <th>Active</th>
+        <th>Min version</th>
+        <th>Uploaded</th>
+        <th>Update</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for fw in firmwares %}
+      <tr>
+        <td>{{ fw.id }}</td>
+        <td>{{ fw.device_type }}</td>
+        <td>{{ fw.version }}</td>
+        <td>{{ fw.build_number }}</td>
+        <td>{{ fw.is_stable }}</td>
+        <td>{{ fw.is_active }}</td>
+        <td>{{ fw.min_current_version or "-" }}</td>
+        <td>{{ fw.created_at.isoformat() }}</td>
+        <td>
+          <form method="post" action="/admin-ui/ota/firmware/{{ fw.id }}/update" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>Stable</label>
+            <input type="checkbox" name="is_stable" {% if fw.is_stable %}checked{% endif %}>
+            <label>Active</label>
+            <input type="checkbox" name="is_active" {% if fw.is_active %}checked{% endif %}>
+            <input type="text" name="min_current_version" placeholder="min ver" value="{{ fw.min_current_version or '' }}">
+            <button type="submit" class="button-compact">Save</button>
+          </form>
+          <form method="post" action="/admin-ui/ota/firmware/{{ fw.id }}/delete" class="inline" onsubmit="return confirm('Delete this firmware?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="button-danger button-compact">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No firmware uploaded yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

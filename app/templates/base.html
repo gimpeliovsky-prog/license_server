@@ -12,13 +12,16 @@
       --text: #1c1c1c;
       --muted: #5b5b5b;
       --accent: #0f6fff;
+      --accent-strong: #0847b8;
       --danger: #d93025;
       --border: #e2e2e2;
+      --nav-bg: #0b2545;
+      --nav-surface: rgba(255, 255, 255, 0.08);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      font-family: "Trebuchet MS", "Gill Sans", "Avenir Next", sans-serif;
       background:
         radial-gradient(circle at 15% 10%, #ffffff, transparent 45%),
         radial-gradient(circle at 85% 0%, #e6f0ff, transparent 50%),
@@ -26,23 +29,93 @@
       color: var(--text);
     }
     header {
-      background: #0b2545;
+      background: var(--nav-bg);
       color: #ffffff;
       padding: 16px 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 16px;
     }
-    header a {
+    header a, header button {
       color: #ffffff;
       text-decoration: none;
-      margin-left: 12px;
       font-size: 14px;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .brand span {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .context-switcher {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .context-switcher a {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+    .context-switcher a.active {
+      background: #ffffff;
+      color: var(--nav-bg);
+      font-weight: 600;
     }
     main {
       max-width: 1100px;
       margin: 24px auto;
       padding: 0 16px 48px;
+    }
+    .app-shell {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    aside {
+      position: sticky;
+      top: 16px;
+      background: #0b1f3a;
+      color: #ffffff;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 8px 20px rgba(11, 31, 58, 0.2);
+      animation: fadeSlide 0.35s ease both;
+    }
+    aside h3 {
+      margin: 0 0 12px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.6);
+    }
+    .side-nav {
+      display: grid;
+      gap: 6px;
+    }
+    .side-nav a {
+      display: block;
+      padding: 10px 12px;
+      border-radius: 10px;
+      color: rgba(255, 255, 255, 0.85);
+      text-decoration: none;
+      background: transparent;
+    }
+    .side-nav a.active {
+      background: var(--nav-surface);
+      color: #ffffff;
+      font-weight: 600;
+    }
+    .side-nav a:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #ffffff;
     }
     h1, h2 {
       margin-top: 0;
@@ -97,9 +170,46 @@
       color: #ffffff;
       border: none;
       cursor: pointer;
+      width: auto;
+      min-width: 120px;
     }
     .button-secondary { background: #667085; }
     .button-danger { background: var(--danger); }
+    .button-compact {
+      min-width: 0;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .button-block { width: 100%; }
+    .button-pill {
+      min-width: 0;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      background: #123a6b;
+      color: #ffffff;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .button-ghost {
+      min-width: 0;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--nav-bg);
+      border: 1px solid rgba(11, 37, 69, 0.2);
+    }
+    .button-ghost.active {
+      background: var(--nav-bg);
+      color: #ffffff;
+      border-color: var(--nav-bg);
+    }
+    .section-tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
     .grid-2 {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -111,22 +221,34 @@
       align-items: center;
     }
     .inline input, .inline select { width: auto; }
+    .inline label { margin: 0; font-size: 12px; }
     .muted { color: var(--muted); }
     @keyframes fadeSlide {
       from { opacity: 0; transform: translateY(6px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    @media (max-width: 900px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+      aside {
+        position: static;
+      }
+    }
   </style>
 </head>
 <body>
 <header>
-  <div>
-    <strong>KadimaSoft License Admin</strong>
+  <div class="brand">
+    <strong>KadimaSoft Admin</strong>
+    <span>OTA + Licensing</span>
   </div>
   {% if is_admin %}
+  <div class="context-switcher">
+    <a href="/admin-ui/licensing" class="{% if active_context == 'licensing' %}active{% endif %}">Licensing</a>
+    <a href="/admin-ui/ota" class="{% if active_context == 'ota' %}active{% endif %}">OTA Updates</a>
+  </div>
   <nav>
-    <a href="/admin-ui/tenants">Tenants</a>
-    <a href="/admin-ui/erp-allowlist">ERP Allowlist</a>
     <a href="/admin-ui/logout">Logout</a>
   </nav>
   {% endif %}
@@ -134,7 +256,37 @@
 <main>
   {% if message %}<div class="message">{{ message }}</div>{% endif %}
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
-  {% block content %}{% endblock %}
+  {% if is_admin %}
+  <div class="app-shell">
+    <aside>
+      {% if active_context == "ota" %}
+      <h3>OTA Updates</h3>
+      <div class="side-nav">
+        <a href="/admin-ui/ota" class="{% if active_page == 'ota-dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="/admin-ui/ota/releases" class="{% if active_page == 'ota-releases' %}active{% endif %}">Releases</a>
+        <a href="/admin-ui/ota/access" class="{% if active_page == 'ota-access' %}active{% endif %}">ESP32 Access</a>
+        <a href="/admin-ui/ota/devices" class="{% if active_page == 'ota-devices' %}active{% endif %}">Devices</a>
+        <a href="/admin-ui/ota/channels" class="{% if active_page == 'ota-channels' %}active{% endif %}">Channels</a>
+        <a href="/admin-ui/ota/policies" class="{% if active_page == 'ota-policies' %}active{% endif %}">Policies</a>
+        <a href="/admin-ui/ota/monitoring" class="{% if active_page == 'ota-monitoring' %}active{% endif %}">Monitoring</a>
+      </div>
+      {% else %}
+      <h3>Licensing</h3>
+      <div class="side-nav">
+        <a href="/admin-ui/licensing" class="{% if active_page == 'licensing-dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="/admin-ui/tenants" class="{% if active_page == 'tenants' %}active{% endif %}">Tenants</a>
+        <a href="/admin-ui/licenses" class="{% if active_page == 'licenses' %}active{% endif %}">Licenses</a>
+        <a href="/admin-ui/erp-allowlist" class="{% if active_page == 'erp-allowlist' %}active{% endif %}">ERP Allowlist</a>
+      </div>
+      {% endif %}
+    </aside>
+    <section>
+  {% endif %}
+      {% block content %}{% endblock %}
+  {% if is_admin %}
+    </section>
+  </div>
+  {% endif %}
 </main>
 </body>
 </html>

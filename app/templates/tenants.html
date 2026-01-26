@@ -3,13 +3,19 @@
 {% block content %}
 <h1>Tenants</h1>
 
-<div class="panel">
+<div class="section-tabs">
+  <button type="button" class="button-ghost active" data-tab-target="tenant-list">List</button>
+  <button type="button" class="button-ghost" data-tab-target="tenant-create">Create</button>
+</div>
+
+<div class="panel" id="tenant-list">
   <h2>All tenants</h2>
   {% if tenants %}
   <table>
     <thead>
       <tr>
         <th>Company code</th>
+        <th>Company name</th>
         <th>Status</th>
         <th>Subscription expires</th>
         <th>ERPNext URL</th>
@@ -20,10 +26,11 @@
       {% for tenant in tenants %}
       <tr>
         <td>{{ tenant.company_code }}</td>
+        <td>{{ tenant.company_name or "-" }}</td>
         <td>{{ tenant.status.value }}</td>
         <td>{{ tenant.subscription_expires_at.isoformat() }}</td>
         <td>{{ tenant.erpnext_url }}</td>
-        <td><a href="/admin-ui/tenants/{{ tenant.company_code }}">Open</a></td>
+        <td><a href="/admin-ui/tenants/{{ tenant.company_code }}" class="button-pill">Open</a></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -33,7 +40,7 @@
   {% endif %}
 </div>
 
-<div class="panel">
+<div class="panel" id="tenant-create">
   <h2>Create tenant</h2>
   <form method="post" action="/admin-ui/tenants">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -41,6 +48,10 @@
       <div>
         <label>Company code</label>
         <input type="text" name="company_code" required>
+      </div>
+      <div>
+        <label>Company name</label>
+        <input type="text" name="company_name" placeholder="KadimaSoft LLC">
       </div>
       <div>
         <label>ERPNext URL</label>
@@ -68,8 +79,33 @@
       </div>
     </div>
     <div style="margin-top: 12px;">
-      <button type="submit">Create tenant</button>
+      <button type="submit" class="button-block">Create tenant</button>
     </div>
   </form>
 </div>
+
+<script>
+  (function () {
+    const tabs = Array.from(document.querySelectorAll("[data-tab-target]"));
+    const panels = Array.from(document.querySelectorAll("#tenant-list, #tenant-create"));
+    if (!tabs.length || !panels.length) return;
+
+    const activate = (targetId) => {
+      tabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.getAttribute("data-tab-target") === targetId);
+      });
+      panels.forEach((panel) => {
+        panel.style.display = panel.id === targetId ? "block" : "none";
+      });
+    };
+
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        activate(tab.getAttribute("data-tab-target"));
+      });
+    });
+
+    activate("tenant-list");
+  })();
+</script>
 {% endblock %}

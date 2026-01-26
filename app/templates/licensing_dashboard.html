@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Licensing Dashboard</h1>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Tenants</h2>
+    <div style="font-size: 28px; font-weight: 600;">{{ total_tenants }}</div>
+    <p class="muted">Active: {{ active_tenants }} · Suspended: {{ suspended_tenants }}</p>
+  </div>
+  <div class="panel">
+    <h2>Licenses</h2>
+    <div style="font-size: 28px; font-weight: 600;">{{ total_licenses }}</div>
+    <p class="muted">Active: {{ active_licenses }} · Revoked: {{ revoked_licenses }}</p>
+  </div>
+</div>
+
+  <div class="panel">
+    <h2>Subscription health</h2>
+    <p class="muted">Tenants expiring in the next 30 days: {{ expiring_soon }}</p>
+  </div>
+{% endblock %}

@@ -18,9 +18,11 @@ from app.models import (
     ERPAllowlistType,
     LicenseKey,
     LicenseKeyStatus,
+    OTAAccess,
     Tenant,
     TenantStatus,
 )
+from app.models.firmware import DeviceOTALog, Firmware
 from app.services.allowlist import (
     has_allowlist_entries,
     normalize_doctype,
@@ -30,12 +32,14 @@ from app.services.allowlist import (
 from app.services.rate_limit import RateLimiter
 from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
+from app.services.ota import OTAService
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
 login_limiter = RateLimiter(settings.rate_limit_login_per_minute, 60)
+ota_service = OTAService(firmware_base_path="firmware")
 
 
 def parse_datetime_input(value: str) -> datetime:
@@ -142,15 +146,33 @@ def get_tenant_or_none(db: Session, company_code: str) -> Tenant | None:
     return db.query(Tenant).filter(Tenant.company_code == company_code).first()
 
 
+def build_admin_context(
+    request: Request,
+    title: str,
+    active_context: str,
+    active_page: str,
+    **extra,
+) -> dict:
+    context = {
+        "request": request,
+        "title": title,
+        "is_admin": True,
+        "active_context": active_context,
+        "active_page": active_page,
+    }
+    context.update(extra)
+    return context
+
+
 @router.get("/")
 def index() -> RedirectResponse:
-    return redirect_to("/admin-ui/tenants")
+    return redirect_to("/admin-ui/licensing")
 
 
 @router.get("/login")
 def login_page(request: Request):
     if validate_admin_session(request):
-        return redirect_to("/admin-ui/tenants")
+        return redirect_to("/admin-ui/licensing")
     message, error, _ = pop_flash(request)
     context = {
         "request": request,
@@ -159,6 +181,8 @@ def login_page(request: Request):
         "error": error,
         "admin_token_configured": bool(settings.admin_token),
         "is_admin": False,
+        "active_context": None,
+        "active_page": None,
         "csrf_token": get_csrf_token(request),
     }
     return templates.TemplateResponse("login.html", context)
@@ -191,7 +215,43 @@ async def login(request: Request):
     request.session["last_seen"] = now_ts
     request.session["csrf_token"] = secrets.token_urlsafe(32)
     set_flash(request, message="Logged in")
-    return redirect_to("/admin-ui/tenants")
+    return redirect_to("/admin-ui/licensing")
+
+
+@router.get("/licensing")
+def licensing_dashboard(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    total_tenants = db.query(Tenant).count()
+    active_tenants = db.query(Tenant).filter(Tenant.status == TenantStatus.active).count()
+    suspended_tenants = db.query(Tenant).filter(Tenant.status == TenantStatus.suspended).count()
+    total_licenses = db.query(LicenseKey).count()
+    active_licenses = db.query(LicenseKey).filter(LicenseKey.status == LicenseKeyStatus.active).count()
+    revoked_licenses = db.query(LicenseKey).filter(LicenseKey.status == LicenseKeyStatus.revoked).count()
+
+    soon_date = utcnow() + timedelta(days=30)
+    expiring_soon = (
+        db.query(Tenant)
+        .filter(Tenant.subscription_expires_at <= soon_date)
+        .count()
+    )
+
+    context = build_admin_context(
+        request,
+        "Licensing Dashboard",
+        "licensing",
+        "licensing-dashboard",
+        total_tenants=total_tenants,
+        active_tenants=active_tenants,
+        suspended_tenants=suspended_tenants,
+        total_licenses=total_licenses,
+        active_licenses=active_licenses,
+        revoked_licenses=revoked_licenses,
+        expiring_soon=expiring_soon,
+    )
+    return templates.TemplateResponse("licensing_dashboard.html", context)
 
 
 @router.get("/logout")
@@ -209,16 +269,17 @@ def list_tenants(request: Request, db: Session = Depends(get_db)):
     tenants = db.query(Tenant).order_by(Tenant.company_code.asc()).all()
     message, error, _ = pop_flash(request)
 
-    context = {
-        "request": request,
-        "title": "Tenants",
-        "tenants": tenants,
-        "message": message,
-        "error": error,
-        "statuses": [status.value for status in TenantStatus],
-        "is_admin": True,
-        "csrf_token": get_csrf_token(request),
-    }
+    context = build_admin_context(
+        request,
+        "Tenants",
+        "licensing",
+        "tenants",
+        tenants=tenants,
+        message=message,
+        error=error,
+        statuses=[status.value for status in TenantStatus],
+        csrf_token=get_csrf_token(request),
+    )
     return templates.TemplateResponse("tenants.html", context)
 
 
@@ -234,6 +295,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
         return csrf_error
 
     company_code = str(form.get("company_code") or "").strip()
+    company_name = str(form.get("company_name") or "").strip()
     erpnext_url = normalize_erpnext_url(str(form.get("erpnext_url") or ""))
     api_key = str(form.get("api_key") or "").strip()
     api_secret = str(form.get("api_secret") or "").strip()
@@ -261,6 +323,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
 
     tenant = Tenant(
         company_code=company_code,
+        company_name=company_name or None,
         erpnext_url=erpnext_url,
         api_key=api_key,
         api_secret=api_secret,
@@ -291,29 +354,46 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         .order_by(LicenseKey.created_at.desc())
         .all()
     )
-    devices = (
-        db.query(Device)
-        .filter(Device.tenant_id == tenant.id)
-        .order_by(Device.created_at.desc())
-        .all()
-    )
     message, error, license_key = pop_flash(request)
 
-    context = {
-        "request": request,
-        "title": f"Tenant {tenant.company_code}",
-        "tenant": tenant,
-        "licenses": licenses,
-        "devices": devices,
-        "message": message,
-        "error": error,
-        "new_license_key": license_key,
-        "tenant_statuses": [status.value for status in TenantStatus],
-        "license_statuses": [status.value for status in LicenseKeyStatus],
-        "is_admin": True,
-        "csrf_token": get_csrf_token(request),
-    }
+    context = build_admin_context(
+        request,
+        f"Tenant {tenant.company_code}",
+        "licensing",
+        "tenants",
+        tenant=tenant,
+        licenses=licenses,
+        message=message,
+        error=error,
+        new_license_key=license_key,
+        tenant_statuses=[status.value for status in TenantStatus],
+        license_statuses=[status.value for status in LicenseKeyStatus],
+        csrf_token=get_csrf_token(request),
+    )
     return templates.TemplateResponse("tenant_detail.html", context)
+
+
+@router.get("/licenses")
+def list_licenses(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    licenses = (
+        db.query(LicenseKey)
+        .join(Tenant, LicenseKey.tenant_id == Tenant.id)
+        .order_by(LicenseKey.created_at.desc())
+        .all()
+    )
+
+    context = build_admin_context(
+        request,
+        "Licenses",
+        "licensing",
+        "licenses",
+        licenses=licenses,
+    )
+    return templates.TemplateResponse("licenses.html", context)
 
 
 @router.post("/tenants/{company_code}/status")
@@ -458,6 +538,15 @@ async def create_license(request: Request, company_code: str, db: Session = Depe
 
     license_key = license_key_raw or secrets.token_urlsafe(32)
     fingerprint = fingerprint_license_key(license_key) or None
+    if fingerprint:
+        existing = (
+            db.query(LicenseKey)
+            .filter(LicenseKey.fingerprint == fingerprint)
+            .first()
+        )
+        if existing:
+            set_flash(request, error="License key already exists")
+            return redirect_to(f"/admin-ui/tenants/{company_code}")
     license_entry = LicenseKey(
         tenant_id=tenant.id,
         hashed_key=hash_license_key(license_key),
@@ -538,38 +627,402 @@ async def delete_license(request: Request, license_id: str, db: Session = Depend
     return redirect_to(redirect_target)
 
 
-@router.post("/tenants/{company_code}/devices/{device_id}")
-async def update_device(request: Request, company_code: str, device_id: str, db: Session = Depends(get_db)):
+@router.get("/ota")
+def ota_dashboard(request: Request, db: Session = Depends(get_db)):
     redirect_response = require_admin_or_redirect(request)
     if redirect_response:
         return redirect_response
 
-    tenant = get_tenant_or_none(db, company_code)
-    if not tenant:
-        set_flash(request, error="Tenant not found")
-        return redirect_to("/admin-ui/tenants")
+    message, error, _ = pop_flash(request)
+    total_firmwares = db.query(Firmware).count()
+    active_firmwares = db.query(Firmware).filter(Firmware.is_active == True).count()
+    stable_firmwares = db.query(Firmware).filter(Firmware.is_stable == True).count()
+    total_logs = db.query(DeviceOTALog).count()
+    failed_logs = db.query(DeviceOTALog).filter(DeviceOTALog.status == "failed").count()
+
+    context = build_admin_context(
+        request,
+        "OTA Dashboard",
+        "ota",
+        "ota-dashboard",
+        total_firmwares=total_firmwares,
+        active_firmwares=active_firmwares,
+        stable_firmwares=stable_firmwares,
+        total_logs=total_logs,
+        failed_logs=failed_logs,
+        message=message,
+        error=error,
+    )
+    return templates.TemplateResponse("ota_dashboard.html", context)
+
+
+@router.get("/ota/releases")
+def ota_releases(request: Request, db: Session = Depends(get_db), device_type: str | None = None):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    message, error, _ = pop_flash(request)
+    query = db.query(Firmware)
+    if device_type:
+        query = query.filter(Firmware.device_type == device_type)
+    firmwares = (
+        query.order_by(Firmware.device_type.asc(), Firmware.version.desc(), Firmware.build_number.desc())
+        .all()
+    )
+    device_types = [
+        row[0] for row in db.query(Firmware.device_type).distinct().order_by(Firmware.device_type.asc()).all()
+    ]
+
+    context = build_admin_context(
+        request,
+        "OTA Releases",
+        "ota",
+        "ota-releases",
+        firmwares=firmwares,
+        device_types=device_types,
+        selected_device_type=device_type or "",
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+    )
+    return templates.TemplateResponse("ota_releases.html", context)
+
+
+@router.post("/ota/releases")
+async def create_ota_release(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
 
     form = await request.form()
-    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/releases")
     if csrf_error:
         return csrf_error
 
-    revoked_raw = str(form.get("revoked") or "").strip().lower()
-    revoked = revoked_raw == "true"
+    device_type = str(form.get("device_type") or "").strip()
+    version = str(form.get("version") or "").strip()
+    build_raw = str(form.get("build_number") or "").strip()
+    description = str(form.get("description") or "").strip() or None
+    release_notes = str(form.get("release_notes") or "").strip() or None
+    min_current_version = str(form.get("min_current_version") or "").strip() or None
+    is_stable = bool(form.get("is_stable"))
 
-    device = (
-        db.query(Device)
-        .filter(Device.tenant_id == tenant.id, Device.device_id == device_id)
+    upload = form.get("firmware_file")
+    if not device_type or not version or not build_raw or not upload:
+        set_flash(request, error="Device type, version, build number, and file are required")
+        return redirect_to("/admin-ui/ota/releases")
+
+    try:
+        build_number = int(build_raw)
+        if build_number < 1:
+            raise ValueError
+    except ValueError:
+        set_flash(request, error="Build number must be a positive integer")
+        return redirect_to("/admin-ui/ota/releases")
+
+    if ota_service._parse_version(version) is None:
+        set_flash(request, error="Version must be semantic (e.g., 1.2.3)")
+        return redirect_to("/admin-ui/ota/releases")
+
+    if min_current_version and ota_service._parse_version(min_current_version) is None:
+        set_flash(request, error="Min current version must be semantic (e.g., 1.0.0)")
+        return redirect_to("/admin-ui/ota/releases")
+
+    existing = (
+        db.query(Firmware)
+        .filter(
+            Firmware.device_type == device_type,
+            Firmware.version == version,
+            Firmware.build_number == build_number,
+        )
         .first()
     )
-    if not device:
-        set_flash(request, error="Device not found")
-        return redirect_to(f"/admin-ui/tenants/{company_code}")
+    if existing:
+        set_flash(request, error="Firmware with same device type, version, and build already exists")
+        return redirect_to("/admin-ui/ota/releases")
 
-    device.revoked = revoked
+    raw_filename = getattr(upload, "filename", None) or f"{device_type}-v{version}-b{build_number}.bin"
+    filename = str(raw_filename).split("/")[-1].split("\\")[-1]
+    safe_device_type = "".join(ch for ch in device_type if ch.isalnum() or ch in ("-", "_")).strip()
+    if not safe_device_type:
+        set_flash(request, error="Device type contains invalid characters")
+        return redirect_to("/admin-ui/ota/releases")
+
+    binary_path = f"{safe_device_type}/v{version}_b{build_number}.bin"
+    file_path = ota_service.firmware_path / binary_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_bytes = await upload.read()
+    if not file_bytes:
+        set_flash(request, error="Uploaded file is empty")
+        return redirect_to("/admin-ui/ota/releases")
+
+    file_path.write_bytes(file_bytes)
+    file_hash = ota_service.calculate_file_hash(file_path)
+    file_size = file_path.stat().st_size
+
+    firmware = Firmware(
+        device_type=device_type,
+        version=version,
+        build_number=build_number,
+        filename=filename,
+        file_size=file_size,
+        file_hash=file_hash,
+        binary_path=binary_path,
+        description=description,
+        release_notes=release_notes,
+        is_stable=is_stable,
+        min_current_version=min_current_version,
+        is_active=True,
+        released_at=utcnow() if is_stable else None,
+    )
+    db.add(firmware)
     db.commit()
-    set_flash(request, message="Device updated")
-    return redirect_to(f"/admin-ui/tenants/{company_code}")
+    set_flash(request, message="Firmware uploaded and registered")
+    return redirect_to("/admin-ui/ota/releases")
+
+
+@router.get("/ota/access")
+def ota_access(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    message, error, _ = pop_flash(request)
+    current_setting = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
+    tenants = db.query(Tenant).order_by(Tenant.company_code.asc()).all()
+    license_keys = (
+        db.query(LicenseKey)
+        .join(Tenant, LicenseKey.tenant_id == Tenant.id)
+        .order_by(Tenant.company_code.asc(), LicenseKey.created_at.desc())
+        .all()
+    )
+
+    context = build_admin_context(
+        request,
+        "ESP32 Access",
+        "ota",
+        "ota-access",
+        tenants=tenants,
+        license_keys=license_keys,
+        current_setting=current_setting,
+        current_tenant_id=current_setting.tenant_id if current_setting else None,
+        current_license_id=current_setting.license_key_id if current_setting else None,
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+    )
+    return templates.TemplateResponse("ota_access.html", context)
+
+
+@router.post("/ota/access")
+async def update_ota_access(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/access")
+    if csrf_error:
+        return csrf_error
+
+    tenant_raw = str(form.get("tenant_id") or "").strip()
+    license_raw = str(form.get("license_key_id") or "").strip()
+    if not tenant_raw or not license_raw:
+        set_flash(request, error="Select both tenant and license key")
+        return redirect_to("/admin-ui/ota/access")
+
+    try:
+        tenant_id = uuid.UUID(tenant_raw)
+        license_id = uuid.UUID(license_raw)
+    except ValueError:
+        set_flash(request, error="Invalid tenant or license id")
+        return redirect_to("/admin-ui/ota/access")
+
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/ota/access")
+
+    license_key = db.query(LicenseKey).filter(LicenseKey.id == license_id).first()
+    if not license_key:
+        set_flash(request, error="License key not found")
+        return redirect_to("/admin-ui/ota/access")
+
+    if license_key.tenant_id != tenant.id:
+        set_flash(request, error="License key does not belong to selected tenant")
+        return redirect_to("/admin-ui/ota/access")
+
+    current_setting = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
+    if current_setting:
+        current_setting.tenant_id = tenant.id
+        current_setting.license_key_id = license_key.id
+    else:
+        current_setting = OTAAccess(tenant_id=tenant.id, license_key_id=license_key.id)
+        db.add(current_setting)
+
+    db.commit()
+    set_flash(request, message="ESP32 access updated")
+    return redirect_to("/admin-ui/ota/access")
+
+
+@router.post("/ota/access/clear")
+async def clear_ota_access(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/access")
+    if csrf_error:
+        return csrf_error
+
+    current_setting = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
+    if current_setting:
+        db.delete(current_setting)
+        db.commit()
+        set_flash(request, message="ESP32 access cleared")
+    return redirect_to("/admin-ui/ota/access")
+
+
+@router.post("/ota/firmware/{firmware_id}/update")
+async def update_ota_release(request: Request, firmware_id: int, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/releases")
+    if csrf_error:
+        return csrf_error
+
+    firmware = db.query(Firmware).filter(Firmware.id == firmware_id).first()
+    if not firmware:
+        set_flash(request, error="Firmware not found")
+        return redirect_to("/admin-ui/ota/releases")
+
+    min_current_version = str(form.get("min_current_version") or "").strip() or None
+    if min_current_version and ota_service._parse_version(min_current_version) is None:
+        set_flash(request, error="Min current version must be semantic (e.g., 1.0.0)")
+        return redirect_to("/admin-ui/ota/releases")
+
+    firmware.is_stable = bool(form.get("is_stable"))
+    firmware.is_active = bool(form.get("is_active"))
+    firmware.min_current_version = min_current_version
+    if firmware.is_stable and firmware.released_at is None:
+        firmware.released_at = utcnow()
+
+    db.commit()
+    set_flash(request, message="Firmware updated")
+    return redirect_to("/admin-ui/ota/releases")
+
+
+@router.post("/ota/firmware/{firmware_id}/delete")
+async def delete_ota_release(request: Request, firmware_id: int, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/releases")
+    if csrf_error:
+        return csrf_error
+
+    firmware = db.query(Firmware).filter(Firmware.id == firmware_id).first()
+    if not firmware:
+        set_flash(request, error="Firmware not found")
+        return redirect_to("/admin-ui/ota/releases")
+
+    binary_path = ota_service.get_firmware_binary_path(firmware)
+    try:
+        if binary_path.exists():
+            binary_path.unlink()
+    except OSError:
+        set_flash(request, error="Firmware file could not be deleted")
+        return redirect_to("/admin-ui/ota/releases")
+
+    db.delete(firmware)
+    db.commit()
+    set_flash(request, message="Firmware deleted")
+    return redirect_to("/admin-ui/ota/releases")
+
+
+@router.get("/ota/devices")
+def ota_devices(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    logs = (
+        db.query(DeviceOTALog)
+        .order_by(DeviceOTALog.updated_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    context = build_admin_context(
+        request,
+        "OTA Devices",
+        "ota",
+        "ota-devices",
+        logs=logs,
+    )
+    return templates.TemplateResponse("ota_devices.html", context)
+
+
+@router.get("/ota/channels")
+def ota_channels(request: Request):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    context = build_admin_context(
+        request,
+        "OTA Channels",
+        "ota",
+        "ota-channels",
+    )
+    return templates.TemplateResponse("ota_channels.html", context)
+
+
+@router.get("/ota/policies")
+def ota_policies(request: Request):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    context = build_admin_context(
+        request,
+        "OTA Policies",
+        "ota",
+        "ota-policies",
+    )
+    return templates.TemplateResponse("ota_policies.html", context)
+
+
+@router.get("/ota/monitoring")
+def ota_monitoring(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    failed_logs = (
+        db.query(DeviceOTALog)
+        .filter(DeviceOTALog.status == "failed")
+        .order_by(DeviceOTALog.updated_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    context = build_admin_context(
+        request,
+        "OTA Monitoring",
+        "ota",
+        "ota-monitoring",
+        failed_logs=failed_logs,
+    )
+    return templates.TemplateResponse("ota_monitoring.html", context)
 
 
 @router.get("/erp-allowlist")
@@ -592,18 +1045,19 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
     )
 
     message, error, _ = pop_flash(request)
-    context = {
-        "request": request,
-        "title": "ERP Allowlist",
-        "doctypes": doctypes,
-        "methods": methods,
-        "defaults_doctypes": settings.erp_allowed_doctypes,
-        "defaults_methods": settings.erp_allowed_methods,
-        "message": message,
-        "error": error,
-        "is_admin": True,
-        "csrf_token": get_csrf_token(request),
-    }
+    context = build_admin_context(
+        request,
+        "ERP Allowlist",
+        "licensing",
+        "erp-allowlist",
+        doctypes=doctypes,
+        methods=methods,
+        defaults_doctypes=settings.erp_allowed_doctypes,
+        defaults_methods=settings.erp_allowed_methods,
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+    )
     return templates.TemplateResponse("erp_allowlist.html", context)
 
 

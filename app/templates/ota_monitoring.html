@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Monitoring</h1>
+
+<div class="panel">
+  <h2>Recent failures</h2>
+  {% if failed_logs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Device ID</th>
+        <th>Firmware ID</th>
+        <th>Error</th>
+        <th>Last update</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in failed_logs %}
+      <tr>
+        <td>{{ log.device_id }}</td>
+        <td>{{ log.firmware_id }}</td>
+        <td>{{ log.error_message or '-' }}</td>
+        <td>{{ log.updated_at.isoformat() }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No failed OTA updates.</p>
+  {% endif %}
+</div>
+{% endblock %}

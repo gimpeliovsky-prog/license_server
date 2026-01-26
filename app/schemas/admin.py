@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class TenantCreateRequest(BaseModel):
     company_code: str = Field(..., min_length=1, max_length=64)
+    company_name: str | None = Field(default=None, max_length=255)
     erpnext_url: str = Field(..., min_length=1, max_length=255)
     api_key: str = Field(..., min_length=1, max_length=255)
     api_secret: str = Field(..., min_length=1, max_length=255)
@@ -16,6 +17,7 @@ class TenantCreateRequest(BaseModel):
 class TenantResponse(BaseModel):
     id: UUID
     company_code: str
+    company_name: str | None = None
     erpnext_url: str
     status: str
     subscription_expires_at: datetime
