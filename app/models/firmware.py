@@ -1,6 +1,6 @@
 """OTA Firmware model for device updates."""
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, Boolean, Text
+from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 
@@ -52,7 +52,7 @@ class DeviceOTALog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(Integer, nullable=False, index=True)  # Reference to Device model
-    firmware_id = Column(Integer, nullable=False, index=True)  # Which firmware version
+    firmware_id = Column(Integer, ForeignKey("firmware.id"), nullable=False, index=True)  # Which firmware version
     
     # Status tracking
     status = Column(String(20), nullable=False)  # pending, downloading, installing, success, failed
