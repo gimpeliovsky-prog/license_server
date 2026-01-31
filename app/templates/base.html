@@ -154,7 +154,9 @@
       padding: 8px;
       border-bottom: 1px solid var(--border);
     }
+    td { background: #ffffff; }
     th { color: var(--muted); font-weight: 600; }
+    .table-plain-header th { color: #111111; }
     form { margin: 0; }
     label { display: block; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
     input, select, button {
@@ -221,6 +223,16 @@
       align-items: center;
     }
     .inline input, .inline select { width: auto; }
+    .inline-compact {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      vertical-align: middle;
+    }
+    .inline-compact label { display: inline; margin: 0; font-size: 12px; }
+    .inline-compact input[type="text"] { width: 110px; }
+    .inline-compact input[type="checkbox"] { width: auto; margin: 0; }
     .inline label { margin: 0; font-size: 12px; }
     .muted { color: var(--muted); }
     @keyframes fadeSlide {

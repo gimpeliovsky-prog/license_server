@@ -9,17 +9,17 @@
   <div class="grid-2" style="margin-top: 12px;">
     <div class="panel" style="margin: 0;">
       <h3>ESP32-S3</h3>
-      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data">
+      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data" data-ota-form>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="device_type" value="esp32s3">
         <div class="grid-2">
           <div>
             <label>Version (semver)</label>
-            <input type="text" name="version" placeholder="1.2.0" required>
+            <input type="text" name="version" placeholder="auto from .bin" readonly>
           </div>
           <div>
             <label>Build number</label>
-            <input type="number" name="build_number" min="1" placeholder="1" required>
+            <input type="number" name="build_number" min="1" placeholder="auto from .bin" readonly>
           </div>
           <div>
             <label>Min current version (optional)</label>
@@ -27,7 +27,8 @@
           </div>
           <div>
             <label>Firmware file (.bin)</label>
-            <input type="file" name="firmware_file" accept=".bin" required>
+            <input type="file" name="firmware_file" accept=".bin" required data-ota-file>
+            <div class="muted" data-ota-info></div>
           </div>
           <div>
             <label>Stable release</label>
@@ -52,17 +53,17 @@
     </div>
     <div class="panel" style="margin: 0;">
       <h3>ESP32-P4</h3>
-      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data">
+      <form method="post" action="/admin-ui/ota/releases" enctype="multipart/form-data" data-ota-form>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="device_type" value="esp32p4">
         <div class="grid-2">
           <div>
             <label>Version (semver)</label>
-            <input type="text" name="version" placeholder="1.2.0" required>
+            <input type="text" name="version" placeholder="auto from .bin" readonly>
           </div>
           <div>
             <label>Build number</label>
-            <input type="number" name="build_number" min="1" placeholder="1" required>
+            <input type="number" name="build_number" min="1" placeholder="auto from .bin" readonly>
           </div>
           <div>
             <label>Min current version (optional)</label>
@@ -70,7 +71,8 @@
           </div>
           <div>
             <label>Firmware file (.bin)</label>
-            <input type="file" name="firmware_file" accept=".bin" required>
+            <input type="file" name="firmware_file" accept=".bin" required data-ota-file>
+            <div class="muted" data-ota-info></div>
           </div>
           <div>
             <label>Stable release</label>
@@ -95,6 +97,42 @@
     </div>
   </div>
 </div>
+
+<script>
+(() => {
+  async function inspectFile(form, file) {
+    const csrf = form.querySelector("input[name=csrf_token]").value;
+    const fd = new FormData();
+    fd.append("csrf_token", csrf);
+    fd.append("firmware_file", file);
+    const info = form.querySelector("[data-ota-info]");
+    try {
+      const res = await fetch("/admin-ui/ota/inspect", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        info.textContent = data.error || "Unable to parse firmware";
+        form.querySelector("input[name=version]").value = "";
+        form.querySelector("input[name=build_number]").value = "";
+        return;
+      }
+      form.querySelector("input[name=version]").value = data.version || "";
+      form.querySelector("input[name=build_number]").value = data.build_number || "";
+      info.textContent = data.raw_version ? `Detected: ${data.raw_version}` : `Detected: ${data.version}`;
+    } catch (e) {
+      info.textContent = "Failed to inspect firmware";
+    }
+  }
+
+  document.querySelectorAll("[data-ota-form]").forEach((form) => {
+    const input = form.querySelector("[data-ota-file]");
+    if (!input) return;
+    input.addEventListener("change", (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (file) inspectFile(form, file);
+    });
+  });
+})();
+</script>
 
 <div class="panel">
   <h2>Firmware catalog</h2>
@@ -135,7 +173,7 @@
         <td>{{ fw.min_current_version or "-" }}</td>
         <td>{{ fw.created_at.isoformat() }}</td>
         <td>
-          <form method="post" action="/admin-ui/ota/firmware/{{ fw.id }}/update" class="inline">
+          <form method="post" action="/admin-ui/ota/firmware/{{ fw.id }}/update" class="inline inline-compact">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label>Stable</label>
             <input type="checkbox" name="is_stable" {% if fw.is_stable %}checked{% endif %}>

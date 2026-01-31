@@ -22,6 +22,7 @@ from app.schemas.ota import (
     OTALogResponse,
 )
 from app.services.ota import OTAService
+from app.services.ota_binary import parse_esp_app_desc_version
 
 router = APIRouter(prefix="/ota", tags=["ota"])
 ota_service = OTAService(firmware_base_path="firmware")
@@ -215,13 +216,39 @@ async def create_firmware(
     This registers a new firmware version in the database.
     The binary file should be uploaded separately or pre-placed on disk.
     """
+    # Verify binary file exists
+    binary_path = ota_service.firmware_path / firmware_create.binary_path.lstrip("/")
+    if not binary_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Binary file not found on server",
+        )
+
+    version = firmware_create.version
+    build_number = firmware_create.build_number
+
+    # Parse version/build from binary and override if available
+    with open(binary_path, "rb") as f:
+        header = f.read(24 + 8 + 256)
+    parsed_version, parsed_build, _raw = parse_esp_app_desc_version(header)
+    if parsed_version and parsed_version != version:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Version does not match firmware binary",
+        )
+    if parsed_build and parsed_build != build_number:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Build number does not match firmware binary",
+        )
+
     # Check if firmware version already exists
     existing = (
         db.query(Firmware)
         .filter(
             Firmware.device_type == firmware_create.device_type,
-            Firmware.version == firmware_create.version,
-            Firmware.build_number == firmware_create.build_number,
+            Firmware.version == version,
+            Firmware.build_number == build_number,
         )
         .first()
     )
@@ -230,14 +257,6 @@ async def create_firmware(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Firmware version already exists",
-        )
-
-    # Verify binary file exists
-    binary_path = ota_service.firmware_path / firmware_create.binary_path.lstrip("/")
-    if not binary_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Binary file not found on server",
         )
 
     # Verify file hash
@@ -250,8 +269,8 @@ async def create_firmware(
 
     firmware = Firmware(
         device_type=firmware_create.device_type,
-        version=firmware_create.version,
-        build_number=firmware_create.build_number,
+        version=version,
+        build_number=build_number,
         filename=firmware_create.filename,
         file_size=firmware_create.file_size,
         file_hash=firmware_create.file_hash,
@@ -287,19 +306,36 @@ async def upload_firmware_binary(
     Must be called before creating firmware record.
     """
     try:
-        if not device_type or not version:
+        if not device_type:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="device_type and version are required",
+                detail="device_type is required",
             )
 
         # Create device-specific directory
         device_dir = ota_service.firmware_path / device_type
         device_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save file
-        file_path = device_dir / f"v{version}.bin"
         content = await file.read()
+        parsed_version, parsed_build, raw_version = parse_esp_app_desc_version(content)
+        if parsed_version:
+            if version and version != parsed_version:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Version does not match firmware binary",
+                )
+            version = parsed_version
+        if not version:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unable to parse version from firmware and no version provided",
+            )
+
+        # Save file
+        if parsed_build:
+            file_path = device_dir / f"v{version}_b{parsed_build}.bin"
+        else:
+            file_path = device_dir / f"v{version}.bin"
 
         with open(file_path, "wb") as f:
             f.write(content)
@@ -307,7 +343,7 @@ async def upload_firmware_binary(
         # Calculate hash
         file_hash = ota_service.calculate_file_hash(file_path)
 
-        return {
+        response = {
             "success": True,
             "filename": file.filename,
             "device_type": device_type,
@@ -316,6 +352,12 @@ async def upload_firmware_binary(
             "file_size": len(content),
             "file_hash": file_hash,
         }
+        if parsed_build:
+            response["build_number"] = parsed_build
+            response["binary_path"] = f"{device_type}/v{version}_b{parsed_build}.bin"
+        if raw_version:
+            response["raw_version"] = raw_version
+        return response
     except Exception as e:
         logger.error(f"Error uploading firmware: {e}")
         raise HTTPException(

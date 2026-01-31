@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.services.rate_limit import RateLimiter
 from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.ota import OTAService
+from app.services.ota_binary import parse_esp_app_desc_version
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
@@ -709,8 +710,29 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
     is_stable = bool(form.get("is_stable"))
 
     upload = form.get("firmware_file")
-    if not device_type or not version or not build_raw or not upload:
-        set_flash(request, error="Device type, version, build number, and file are required")
+    if not device_type or not upload:
+        set_flash(request, error="Device type and firmware file are required")
+        return redirect_to("/admin-ui/ota/releases")
+
+    file_bytes = await upload.read()
+    if not file_bytes:
+        set_flash(request, error="Uploaded file is empty")
+        return redirect_to("/admin-ui/ota/releases")
+
+    parsed_version, parsed_build, raw_version = parse_esp_app_desc_version(file_bytes)
+    if parsed_version:
+        if version and version != parsed_version:
+            set_flash(request, error="Version does not match firmware binary")
+            return redirect_to("/admin-ui/ota/releases")
+        version = parsed_version
+    if parsed_build:
+        if build_raw and build_raw != str(parsed_build):
+            set_flash(request, error="Build number does not match firmware binary")
+            return redirect_to("/admin-ui/ota/releases")
+        build_raw = str(parsed_build)
+
+    if not version or not build_raw:
+        set_flash(request, error="Version/build missing and could not be read from firmware")
         return redirect_to("/admin-ui/ota/releases")
 
     try:
@@ -729,6 +751,13 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
         set_flash(request, error="Min current version must be semantic (e.g., 1.0.0)")
         return redirect_to("/admin-ui/ota/releases")
 
+    raw_filename = getattr(upload, "filename", None) or f"{device_type}-v{version}-b{build_number}.bin"
+    filename = str(raw_filename).split("/")[-1].split("\\")[-1]
+    safe_device_type = "".join(ch for ch in device_type if ch.isalnum() or ch in ("-", "_")).strip()
+    if not safe_device_type:
+        set_flash(request, error="Device type contains invalid characters")
+        return redirect_to("/admin-ui/ota/releases")
+
     existing = (
         db.query(Firmware)
         .filter(
@@ -742,21 +771,9 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
         set_flash(request, error="Firmware with same device type, version, and build already exists")
         return redirect_to("/admin-ui/ota/releases")
 
-    raw_filename = getattr(upload, "filename", None) or f"{device_type}-v{version}-b{build_number}.bin"
-    filename = str(raw_filename).split("/")[-1].split("\\")[-1]
-    safe_device_type = "".join(ch for ch in device_type if ch.isalnum() or ch in ("-", "_")).strip()
-    if not safe_device_type:
-        set_flash(request, error="Device type contains invalid characters")
-        return redirect_to("/admin-ui/ota/releases")
-
     binary_path = f"{safe_device_type}/v{version}_b{build_number}.bin"
     file_path = ota_service.firmware_path / binary_path
     file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    file_bytes = await upload.read()
-    if not file_bytes:
-        set_flash(request, error="Uploaded file is empty")
-        return redirect_to("/admin-ui/ota/releases")
 
     file_path.write_bytes(file_bytes)
     file_hash = ota_service.calculate_file_hash(file_path)
@@ -781,6 +798,36 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
     db.commit()
     set_flash(request, message="Firmware uploaded and registered")
     return redirect_to("/admin-ui/ota/releases")
+
+
+@router.post("/ota/inspect", response_class=JSONResponse)
+async def inspect_ota_binary(request: Request) -> JSONResponse:
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return JSONResponse({"ok": False, "error": "Not authorized"}, status_code=403)
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/ota/releases")
+    if csrf_error:
+        return JSONResponse({"ok": False, "error": "Invalid CSRF token"}, status_code=403)
+
+    upload = form.get("firmware_file")
+    if not upload:
+        return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+
+    file_bytes = await upload.read()
+    parsed_version, parsed_build, raw_version = parse_esp_app_desc_version(file_bytes)
+    if not parsed_version:
+        return JSONResponse({"ok": False, "error": "Unable to parse version from firmware"}, status_code=400)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "version": parsed_version,
+            "build_number": parsed_build,
+            "raw_version": raw_version,
+        }
+    )
 
 
 @router.get("/ota/access")

@@ -12,13 +12,20 @@ from app.utils.time import utcnow
 router = APIRouter(tags=["auth"])
 
 
-@router.post("/activate", response_model=TokenResponse)
-def activate(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+def _activate(
+    payload: ActivateRequest,
+    request: Request,
+    db: Session,
+    *,
+    allow_ota_access: bool,
+) -> TokenResponse:
     raw_key = payload.license_key.strip()
     if not raw_key:
         raise HTTPException(status_code=401, detail="License key invalid")
 
-    ota_access = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
+    ota_access = None
+    if allow_ota_access:
+        ota_access = db.query(OTAAccess).order_by(OTAAccess.id.asc()).first()
 
     company_code = payload.company_code.strip() if payload.company_code else None
     company_code_norm = company_code.lower() if company_code else None
@@ -163,6 +170,16 @@ def activate(payload: ActivateRequest, request: Request, db: Session = Depends(g
         expires_at=token_data.expires_at,
         server_time=now,
     )
+
+
+@router.post("/activate", response_model=TokenResponse)
+def activate(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    return _activate(payload, request, db, allow_ota_access=True)
+
+
+@router.post("/activate-erp", response_model=TokenResponse)
+def activate_erp(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    return _activate(payload, request, db, allow_ota_access=False)
 
 
 @router.post("/refresh", response_model=TokenResponse)
