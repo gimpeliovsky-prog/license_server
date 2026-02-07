@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -25,32 +24,41 @@ def has_allowlist_entries(db: Session) -> bool:
     return db.query(ERPAllowlistEntry.id).first() is not None
 
 
-def seed_allowlist_from_settings(db: Session) -> None:
+def seed_allowlist_from_settings(db: Session) -> int:
     settings = get_settings()
+    existing = {
+        (entry.entry_type, entry.value)
+        for entry in db.query(ERPAllowlistEntry).all()
+    }
     entries: list[ERPAllowlistEntry] = []
+    inserted = 0
 
     for raw in settings.erp_allowed_doctypes:
         normalized = normalize_doctype(raw)
-        if normalized:
+        key = (ERPAllowlistType.doctype, normalized)
+        if normalized and key not in existing:
             entries.append(
                 ERPAllowlistEntry(entry_type=ERPAllowlistType.doctype, value=normalized)
             )
+            existing.add(key)
+            inserted += 1
 
     for raw in settings.erp_allowed_methods:
         normalized = normalize_method(raw)
-        if normalized:
+        key = (ERPAllowlistType.method, normalized)
+        if normalized and key not in existing:
             entries.append(
                 ERPAllowlistEntry(entry_type=ERPAllowlistType.method, value=normalized)
             )
+            existing.add(key)
+            inserted += 1
 
     if not entries:
-        return
+        return 0
 
     db.add_all(entries)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
+    db.commit()
+    return inserted
 
 
 def get_allowlist(db: Session) -> Allowlist:

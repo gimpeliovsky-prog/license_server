@@ -249,7 +249,7 @@ def get_purchase_orders(
     context=Depends(get_request_context),
 ):
     params = {
-        "fields": default_fields(["*"]),
+        "fields": default_fields(["name", "supplier"]),
         "limit_page_length": 999,
     }
     ensure_method_allowed("GET", allowlist)
@@ -262,6 +262,29 @@ def get_purchase_orders(
             "GET",
             "/api/resource/Purchase Order",
             params=params,
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+
+
+@router.get("/purchase-orders/{name}")
+def get_purchase_order(
+    name: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_request_context),
+):
+    safe_name = quote(name, safe="")
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Purchase Order", allowlist)
+    try:
+        response = request_erpnext(
+            context.tenant.erpnext_url,
+            context.tenant.api_key,
+            context.tenant.api_secret,
+            "GET",
+            f"/api/resource/Purchase Order/{safe_name}",
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

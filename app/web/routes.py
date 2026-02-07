@@ -1119,13 +1119,11 @@ async def seed_allowlist(request: Request, db: Session = Depends(get_db)):
     if csrf_error:
         return csrf_error
 
-    if has_allowlist_entries(db):
-        set_flash(request, error="Allowlist already has entries")
-        return redirect_to("/admin-ui/erp-allowlist")
-
-    seed_allowlist_from_settings(db)
-    if has_allowlist_entries(db):
-        set_flash(request, message="Defaults loaded into allowlist")
+    inserted = seed_allowlist_from_settings(db)
+    if inserted > 0:
+        set_flash(request, message=f"Defaults merged into allowlist (+{inserted})")
+    elif has_allowlist_entries(db):
+        set_flash(request, message="Allowlist already contains all defaults")
     else:
         set_flash(request, error="No defaults configured in .env")
     return redirect_to("/admin-ui/erp-allowlist")
