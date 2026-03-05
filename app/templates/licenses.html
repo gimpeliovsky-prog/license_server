@@ -15,6 +15,8 @@
         <th>Status</th>
         <th>Fingerprint</th>
         <th>Created</th>
+        <th>Description</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -26,6 +28,14 @@
         <td>{{ key.status.value }}</td>
         <td style="font-family: monospace;">{{ key.fingerprint or "-" }}</td>
         <td>{{ key.created_at.isoformat() }}</td>
+        <td>{{ key.description or "-" }}</td>
+        <td>
+          <form method="post" action="/admin-ui/licenses/{{ key.id }}/description" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="text" name="description" maxlength="512" value="{{ key.description or '' }}" placeholder="Description">
+            <button type="submit" class="button-compact">Save note</button>
+          </form>
+        </td>
       </tr>
       {% endfor %}
     </tbody>

@@ -7,6 +7,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import admin_router, auth_router, erpnext_router, ota_router, status_router
 from app.config import get_settings
+from app.web.public_routes import router as public_web_router
 from app.web.routes import router as web_router
 
 settings = get_settings()
@@ -55,6 +56,7 @@ app.include_router(ota_router)
 app.include_router(ota_router, prefix="/api", include_in_schema=False)
 app.include_router(erpnext_router)
 app.include_router(admin_router)
+app.include_router(public_web_router)
 app.include_router(web_router)
 
 

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6fb;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #d8dee9;
+      --brand: #0f62fe;
+      --brand-ink: #ffffff;
+      --ok-bg: #ecfdf3;
+      --ok-ink: #166534;
+      --err-bg: #fef2f2;
+      --err-ink: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(180deg, #ecf2ff 0%, var(--bg) 40%);
+      color: var(--ink);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .card {
+      width: min(520px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    .cta {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      background: var(--brand);
+      color: var(--brand-ink);
+      font-size: 16px;
+      font-weight: 600;
+      padding: 12px 16px;
+      cursor: pointer;
+      margin-bottom: 16px;
+    }
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 15px;
+    }
+    .subdomain-wrap {
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .subdomain-wrap input {
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      min-width: 0;
+    }
+    .suffix {
+      padding: 0 12px;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 14px;
+      background: #f8fafc;
+      height: 42px;
+      display: grid;
+      place-items: center;
+    }
+    .submit {
+      margin-top: 6px;
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      background: #111827;
+      color: #fff;
+      padding: 11px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .msg {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+    .msg.ok {
+      background: var(--ok-bg);
+      color: var(--ok-ink);
+      border: 1px solid #bbf7d0;
+    }
+    .msg.err {
+      background: var(--err-bg);
+      color: var(--err-ink);
+      border: 1px solid #fecaca;
+    }
+    .qr-block {
+      margin-top: 18px;
+      border-top: 1px dashed var(--line);
+      padding-top: 16px;
+      text-align: center;
+    }
+    .qr-block img {
+      width: 240px;
+      max-width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .pair-url {
+      margin-top: 8px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      color: #334155;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Register new device</h1>
+    <p>Enter company + ERP user credentials to get one-time QR registration code.</p>
+
+    {% if message %}
+      <div class="msg ok">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="msg err">{{ error }}</div>
+    {% endif %}
+
+    <button id="registerButton" class="cta" type="button">Register new device</button>
+
+    <form id="registerForm" method="post" action="/register-device" class="form-grid" style="display:none;">
+      <div>
+        <label for="subdomain">ERP Address</label>
+        <div class="subdomain-wrap">
+          <input id="subdomain" name="subdomain" placeholder="company" value="{{ subdomain }}" required maxlength="63" pattern="[a-zA-Z0-9-]+" />
+          <div class="suffix">.{{ domain_suffix }}</div>
+        </div>
+      </div>
+      <div>
+        <label for="erp_username">ERP Username</label>
+        <input id="erp_username" name="erp_username" value="{{ erp_username }}" required />
+      </div>
+      <div>
+        <label for="erp_password">ERP Password</label>
+        <input id="erp_password" name="erp_password" type="password" required />
+      </div>
+      <button class="submit" type="submit">Generate QR</button>
+      <p>Code validity: {{ ttl_minutes }} minutes, one-time use.</p>
+    </form>
+
+    {% if qr_image_base64 and pair_url %}
+      <section class="qr-block">
+        <img src="data:image/png;base64,{{ qr_image_base64 }}" alt="Pairing QR">
+        <div class="pair-url">{{ pair_url }}</div>
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    (function () {
+      const btn = document.getElementById('registerButton');
+      const form = document.getElementById('registerForm');
+      btn.addEventListener('click', function () {
+        form.style.display = 'grid';
+        btn.style.display = 'none';
+      });
+      if ({{ 'true' if error or message or qr_image_base64 else 'false' }}) {
+        form.style.display = 'grid';
+        btn.style.display = 'none';
+      }
+    })();
+  </script>
+</body>
+</html>

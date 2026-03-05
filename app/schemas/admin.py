@@ -36,6 +36,7 @@ class LicenseCreateRequest(BaseModel):
     company_code: str = Field(..., min_length=1, max_length=64)
     status: str = "active"
     license_key: str | None = None
+    description: str | None = Field(default=None, max_length=512)
 
 
 class LicenseResponse(BaseModel):
@@ -43,6 +44,7 @@ class LicenseResponse(BaseModel):
     status: str
     created_at: datetime
     license_key: str | None = None
+    description: str | None = None
 
 
 class LicenseStatusUpdateRequest(BaseModel):
@@ -57,3 +59,37 @@ class DeviceResponse(BaseModel):
 
 class DeviceRevokeRequest(BaseModel):
     revoked: bool
+
+
+class LicenseDiagnosticsRequest(BaseModel):
+    license_key: str = Field(..., min_length=8, max_length=256)
+    company_code: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class LicenseDiagnosticsTenantInfo(BaseModel):
+    id: UUID | None = None
+    company_code: str | None = None
+    status: str | None = None
+    subscription_expires_at: datetime | None = None
+    subscription_active: bool | None = None
+
+
+class LicenseDiagnosticsLicenseInfo(BaseModel):
+    id: UUID | None = None
+    status: str | None = None
+    tenant_id: UUID | None = None
+    tenant_company_code: str | None = None
+    created_at: datetime | None = None
+    fingerprint: str | None = None
+
+
+class LicenseDiagnosticsResponse(BaseModel):
+    valid: bool
+    reason_code: str
+    reason_detail: str
+    server_time: datetime
+    input_company_code: str | None = None
+    normalized_company_code: str | None = None
+    key_fingerprint: str | None = None
+    tenant: LicenseDiagnosticsTenantInfo = Field(default_factory=LicenseDiagnosticsTenantInfo)
+    matched_license: LicenseDiagnosticsLicenseInfo | None = None

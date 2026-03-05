@@ -2,15 +2,20 @@ import secrets
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import get_client_ip, get_db, require_admin
 from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.schemas import (
     DeviceRevokeRequest,
     DeviceResponse,
     LicenseCreateRequest,
+    LicenseDiagnosticsLicenseInfo,
+    LicenseDiagnosticsRequest,
+    LicenseDiagnosticsResponse,
+    LicenseDiagnosticsTenantInfo,
     LicenseResponse,
     LicenseStatusUpdateRequest,
     SubscriptionUpdateRequest,
@@ -19,7 +24,11 @@ from app.schemas import (
     TenantStatusUpdateRequest,
 )
 from app.services.erpnext import normalize_erpnext_url
-from app.services.license import fingerprint_license_key, hash_license_key
+from app.services.license import (
+    fingerprint_license_key,
+    hash_license_key,
+    verify_license_key_flexible,
+)
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -39,6 +48,13 @@ def parse_license_status(value: str) -> LicenseKeyStatus:
         raise HTTPException(status_code=400, detail="Invalid license status") from exc
 
 
+def normalize_license_description(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def get_tenant_or_404(db: Session, company_code: str) -> Tenant:
     tenant = db.query(Tenant).filter(Tenant.company_code == company_code).first()
     if not tenant:
@@ -54,6 +70,73 @@ def serialize_tenant(tenant: Tenant) -> TenantResponse:
         erpnext_url=tenant.erpnext_url,
         status=tenant.status.value,
         subscription_expires_at=tenant.subscription_expires_at,
+    )
+
+
+def _license_candidates(
+    db: Session,
+    key_fingerprint: str | None,
+    *,
+    tenant_id: uuid.UUID | None,
+    only_active: bool,
+) -> list[LicenseKey]:
+    query = db.query(LicenseKey)
+    if tenant_id is not None:
+        query = query.filter(LicenseKey.tenant_id == tenant_id)
+    if only_active:
+        query = query.filter(LicenseKey.status == LicenseKeyStatus.active)
+
+    if key_fingerprint:
+        by_fingerprint = query.filter(LicenseKey.fingerprint == key_fingerprint).all()
+        if by_fingerprint:
+            return by_fingerprint
+
+    return query.filter(LicenseKey.fingerprint.is_(None)).all()
+
+
+def _find_matching_license(
+    db: Session,
+    raw_key: str,
+    key_fingerprint: str | None,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    only_active: bool = False,
+) -> LicenseKey | None:
+    candidates = _license_candidates(
+        db=db,
+        key_fingerprint=key_fingerprint,
+        tenant_id=tenant_id,
+        only_active=only_active,
+    )
+    return next(
+        (entry for entry in candidates if verify_license_key_flexible(raw_key, entry.hashed_key)),
+        None,
+    )
+
+
+def _serialize_diagnostic_tenant(tenant: Tenant | None, now) -> LicenseDiagnosticsTenantInfo:
+    if not tenant:
+        return LicenseDiagnosticsTenantInfo()
+    return LicenseDiagnosticsTenantInfo(
+        id=tenant.id,
+        company_code=tenant.company_code,
+        status=tenant.status.value,
+        subscription_expires_at=tenant.subscription_expires_at,
+        subscription_active=tenant.subscription_expires_at >= now,
+    )
+
+
+def _serialize_diagnostic_license(entry: LicenseKey | None) -> LicenseDiagnosticsLicenseInfo | None:
+    if not entry:
+        return None
+    tenant = entry.tenant
+    return LicenseDiagnosticsLicenseInfo(
+        id=entry.id,
+        status=entry.status.value,
+        tenant_id=entry.tenant_id,
+        tenant_company_code=tenant.company_code if tenant else None,
+        created_at=entry.created_at,
+        fingerprint=entry.fingerprint,
     )
 
 
@@ -159,7 +242,13 @@ def list_licenses(company_code: str, db: Session = Depends(get_db)) -> list[Lice
         .all()
     )
     return [
-        LicenseResponse(id=key.id, status=key.status.value, created_at=key.created_at, license_key=None)
+        LicenseResponse(
+            id=key.id,
+            status=key.status.value,
+            created_at=key.created_at,
+            license_key=None,
+            description=key.description,
+        )
         for key in licenses
     ]
 
@@ -181,6 +270,7 @@ def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db))
         hashed_key=hash_license_key(license_key),
         fingerprint=fingerprint,
         status=parse_license_status(payload.status),
+        description=normalize_license_description(payload.description),
     )
     db.add(license_entry)
     db.commit()
@@ -190,6 +280,7 @@ def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db))
         status=license_entry.status.value,
         created_at=license_entry.created_at,
         license_key=license_key,
+        description=license_entry.description,
     )
 
 
@@ -215,6 +306,7 @@ def update_license_status(
         status=license_entry.status.value,
         created_at=license_entry.created_at,
         license_key=None,
+        description=license_entry.description,
     )
 
 
@@ -232,6 +324,167 @@ def delete_license(license_id: str, db: Session = Depends(get_db)) -> None:
     db.delete(license_entry)
     db.commit()
     return None
+
+
+@router.post("/licenses/diagnostics", response_model=LicenseDiagnosticsResponse)
+def diagnose_license(
+    payload: LicenseDiagnosticsRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> LicenseDiagnosticsResponse:
+    raw_key = payload.license_key.strip()
+    if not raw_key:
+        raise HTTPException(status_code=400, detail="License key is required")
+
+    now = utcnow()
+    input_company_code = payload.company_code.strip() if payload.company_code else None
+    normalized_company_code = input_company_code.lower() if input_company_code else None
+    key_fingerprint = fingerprint_license_key(raw_key) or None
+
+    matched_active_global = _find_matching_license(
+        db=db,
+        raw_key=raw_key,
+        key_fingerprint=key_fingerprint,
+        only_active=True,
+    )
+    matched_any_global = _find_matching_license(
+        db=db,
+        raw_key=raw_key,
+        key_fingerprint=key_fingerprint,
+        only_active=False,
+    )
+
+    resolved_tenant: Tenant | None = None
+    matched_license: LicenseKey | None = None
+    valid = False
+    reason_code = ""
+    reason_detail = ""
+
+    if normalized_company_code:
+        tenant = (
+            db.query(Tenant)
+            .filter(func.lower(Tenant.company_code) == normalized_company_code)
+            .first()
+        )
+        resolved_tenant = tenant
+
+        if not tenant:
+            reason_code = "tenant_not_found"
+            reason_detail = "Tenant with provided company code does not exist."
+        elif tenant.status != TenantStatus.active:
+            reason_code = "tenant_not_active"
+            reason_detail = f"Tenant status is '{tenant.status.value}'."
+        else:
+            matched_active_in_company = _find_matching_license(
+                db=db,
+                raw_key=raw_key,
+                key_fingerprint=key_fingerprint,
+                tenant_id=tenant.id,
+                only_active=True,
+            )
+            matched_any_in_company = _find_matching_license(
+                db=db,
+                raw_key=raw_key,
+                key_fingerprint=key_fingerprint,
+                tenant_id=tenant.id,
+                only_active=False,
+            )
+
+            if matched_active_in_company:
+                matched_license = matched_active_in_company
+                if tenant.subscription_expires_at < now:
+                    reason_code = "subscription_expired"
+                    reason_detail = "Tenant subscription is expired."
+                else:
+                    valid = True
+                    reason_code = "ok"
+                    reason_detail = "License is valid for activation."
+            elif matched_any_in_company:
+                matched_license = matched_any_in_company
+                reason_code = "license_revoked"
+                reason_detail = "License key exists for tenant, but status is not active."
+            elif matched_any_global:
+                matched_license = matched_any_global
+                other_company = (
+                    matched_any_global.tenant.company_code
+                    if matched_any_global.tenant
+                    else None
+                )
+                reason_code = "license_belongs_other_tenant"
+                reason_detail = (
+                    f"License key belongs to another tenant ({other_company})."
+                    if other_company
+                    else "License key belongs to another tenant."
+                )
+            else:
+                reason_code = "license_not_found_for_company"
+                reason_detail = "License key does not match any license in provided company code."
+    else:
+        if matched_active_global:
+            matched_license = matched_active_global
+            resolved_tenant = matched_active_global.tenant
+            if not resolved_tenant or resolved_tenant.status != TenantStatus.active:
+                reason_code = "tenant_not_active"
+                reason_detail = (
+                    "Tenant for this license is missing."
+                    if not resolved_tenant
+                    else f"Tenant status is '{resolved_tenant.status.value}'."
+                )
+            elif resolved_tenant.subscription_expires_at < now:
+                reason_code = "subscription_expired"
+                reason_detail = "Tenant subscription is expired."
+            else:
+                valid = True
+                reason_code = "ok"
+                reason_detail = "License is valid for activation."
+        elif matched_any_global:
+            matched_license = matched_any_global
+            resolved_tenant = matched_any_global.tenant
+            reason_code = "license_revoked"
+            reason_detail = "License key exists, but status is not active."
+        else:
+            reason_code = "license_not_found"
+            reason_detail = "License key is not found."
+
+    audit_tenant_id = (
+        resolved_tenant.id
+        if resolved_tenant
+        else (matched_license.tenant_id if matched_license else None)
+    )
+    db.add(
+        AuditLog(
+            tenant_id=audit_tenant_id,
+            device_id=None,
+            action="license_diagnostics",
+            meta={
+                "ip": get_client_ip(request),
+                "valid": valid,
+                "reason_code": reason_code,
+                "reason_detail": reason_detail,
+                "input_company_code": input_company_code,
+                "normalized_company_code": normalized_company_code,
+                "key_fingerprint": key_fingerprint,
+                "matched_license_id": str(matched_license.id) if matched_license else None,
+                "matched_license_status": matched_license.status.value if matched_license else None,
+                "matched_license_tenant_id": (
+                    str(matched_license.tenant_id) if matched_license else None
+                ),
+            },
+        )
+    )
+    db.commit()
+
+    return LicenseDiagnosticsResponse(
+        valid=valid,
+        reason_code=reason_code,
+        reason_detail=reason_detail,
+        server_time=now,
+        input_company_code=input_company_code,
+        normalized_company_code=normalized_company_code,
+        key_fingerprint=key_fingerprint,
+        tenant=_serialize_diagnostic_tenant(resolved_tenant, now),
+        matched_license=_serialize_diagnostic_license(matched_license),
+    )
 
 
 @router.get("/tenants/{company_code}/devices", response_model=list[DeviceResponse])

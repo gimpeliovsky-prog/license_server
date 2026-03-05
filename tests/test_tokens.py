@@ -51,3 +51,26 @@ def test_decode_invalid_token():
 
     with pytest.raises(TokenInvalid):
         decode_access_token(token, secret="wrong-secret", algorithm="HS256")
+
+
+def test_create_and_decode_token_with_erp_claims():
+    issued_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    tenant_id = uuid4()
+    token, _ = create_access_token(
+        tenant_id,
+        device_id="device-2",
+        erp_username="picker@example.com",
+        erp_roles=["Sales User", "Picker"],
+        app_permissions=["picklists.read", "picklists.write"],
+        issued_at=issued_at,
+        ttl_days=7,
+        secret="test-secret",
+        algorithm="HS256",
+    )
+
+    decoded = decode_access_token(token, secret="test-secret", algorithm="HS256")
+
+    assert decoded.tenant_id == tenant_id
+    assert decoded.erp_username == "picker@example.com"
+    assert decoded.erp_roles == ("Sales User", "Picker")
+    assert decoded.app_permissions == ("picklists.read", "picklists.write")

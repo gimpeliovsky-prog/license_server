@@ -15,5 +15,6 @@ def test_default_allowed_doctypes_include_sales_order_translation_and_pricing(mo
         "Pricing Rule",
         "Item Tax Template",
         "Sales Taxes and Charges Template",
+        "Item Barcode",
     }
     assert expected.issubset(set(settings.erp_allowed_doctypes))

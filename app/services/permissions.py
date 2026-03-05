@@ -1,0 +1,154 @@
+from collections.abc import Iterable
+
+PERMISSION_ITEMS_READ = "items.read"
+PERMISSION_CUSTOMERS_READ = "customers.read"
+PERMISSION_WAREHOUSES_READ = "warehouses.read"
+PERMISSION_PICKLISTS_READ = "picklists.read"
+PERMISSION_PICKLISTS_WRITE = "picklists.write"
+PERMISSION_SALES_ORDERS_READ = "sales_orders.read"
+PERMISSION_SALES_ORDERS_WRITE = "sales_orders.write"
+PERMISSION_PURCHASE_ORDERS_READ = "purchase_orders.read"
+PERMISSION_STOCK_READ = "stock.read"
+PERMISSION_RESOURCE_READ = "resource.read"
+PERMISSION_RESOURCE_WRITE = "resource.write"
+PERMISSION_TRANSLATIONS_READ = "translations.read"
+
+ALL_PERMISSIONS = {
+    PERMISSION_ITEMS_READ,
+    PERMISSION_CUSTOMERS_READ,
+    PERMISSION_WAREHOUSES_READ,
+    PERMISSION_PICKLISTS_READ,
+    PERMISSION_PICKLISTS_WRITE,
+    PERMISSION_SALES_ORDERS_READ,
+    PERMISSION_SALES_ORDERS_WRITE,
+    PERMISSION_PURCHASE_ORDERS_READ,
+    PERMISSION_STOCK_READ,
+    PERMISSION_RESOURCE_READ,
+    PERMISSION_RESOURCE_WRITE,
+    PERMISSION_TRANSLATIONS_READ,
+}
+
+ROLE_PERMISSION_MAP = {
+    "system manager": ALL_PERMISSIONS,
+    "sales manager": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_SALES_ORDERS_READ,
+        PERMISSION_SALES_ORDERS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "sales user": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_SALES_ORDERS_READ,
+        PERMISSION_SALES_ORDERS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "stock manager": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_PICKLISTS_WRITE,
+        PERMISSION_PURCHASE_ORDERS_READ,
+        PERMISSION_STOCK_READ,
+        PERMISSION_SALES_ORDERS_READ,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "stock user": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_PICKLISTS_WRITE,
+        PERMISSION_PURCHASE_ORDERS_READ,
+        PERMISSION_STOCK_READ,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "delivery manager": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_PICKLISTS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "picker": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_PICKLISTS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "receiver": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PURCHASE_ORDERS_READ,
+        PERMISSION_STOCK_READ,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "sales": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_SALES_ORDERS_READ,
+        PERMISSION_SALES_ORDERS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+    "sales person": {
+        PERMISSION_ITEMS_READ,
+        PERMISSION_CUSTOMERS_READ,
+        PERMISSION_WAREHOUSES_READ,
+        PERMISSION_PICKLISTS_READ,
+        PERMISSION_SALES_ORDERS_READ,
+        PERMISSION_SALES_ORDERS_WRITE,
+        PERMISSION_RESOURCE_READ,
+        PERMISSION_TRANSLATIONS_READ,
+    },
+}
+
+
+def resolve_app_permissions(erp_roles: Iterable[str]) -> set[str]:
+    permissions: set[str] = set()
+    had_roles = False
+    for role in erp_roles:
+        normalized = normalize_role(role)
+        if not normalized:
+            continue
+        had_roles = True
+        mapped = ROLE_PERMISSION_MAP.get(normalized)
+        if mapped:
+            permissions.update(mapped)
+
+    if had_roles and not permissions:
+        permissions.update(
+            {
+                PERMISSION_ITEMS_READ,
+                PERMISSION_CUSTOMERS_READ,
+                PERMISSION_WAREHOUSES_READ,
+                PERMISSION_RESOURCE_READ,
+                PERMISSION_TRANSLATIONS_READ,
+            }
+        )
+    return permissions
+
+
+def normalize_role(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())

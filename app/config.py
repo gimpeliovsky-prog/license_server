@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     rate_limit_refresh_per_minute: int = Field(default=10, alias="RATE_LIMIT_REFRESH_PER_MINUTE")
     rate_limit_login_per_minute: int = Field(default=10, alias="RATE_LIMIT_LOGIN_PER_MINUTE")
     erp_timeout_seconds: int = Field(default=10, alias="ERP_TIMEOUT_SECONDS")
+    pairing_domain_suffix: str = Field(default="kadimasoft.com", alias="PAIRING_DOMAIN_SUFFIX")
+    pairing_token_ttl_minutes: int = Field(default=10, alias="PAIRING_TOKEN_TTL_MINUTES")
+    pairing_qr_scheme: str = Field(default="tsd://pair", alias="PAIRING_QR_SCHEME")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     admin_token: str | None = Field(default=None, alias="ADMIN_TOKEN")
     session_secret: str | None = Field(default=None, alias="SESSION_SECRET")
@@ -77,6 +80,7 @@ class Settings(BaseSettings):
             "Item Tax Template",
             "Sales Taxes and Charges Template",
             "Stock Settings",
+            "Item Barcode",
         ],
         alias="ERP_ALLOWED_DOCTYPES",
     )

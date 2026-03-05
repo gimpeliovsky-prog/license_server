@@ -68,6 +68,13 @@ def parse_license_status(value: str) -> LicenseKeyStatus | None:
         return None
 
 
+def normalize_license_description(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def is_admin(request: Request) -> bool:
     return bool(request.session.get("is_admin"))
 
@@ -380,6 +387,7 @@ def list_licenses(request: Request, db: Session = Depends(get_db)):
     if redirect_response:
         return redirect_response
 
+    message, error, _ = pop_flash(request)
     licenses = (
         db.query(LicenseKey)
         .join(Tenant, LicenseKey.tenant_id == Tenant.id)
@@ -393,6 +401,9 @@ def list_licenses(request: Request, db: Session = Depends(get_db)):
         "licensing",
         "licenses",
         licenses=licenses,
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
     )
     return templates.TemplateResponse("licenses.html", context)
 
@@ -531,6 +542,7 @@ async def create_license(request: Request, company_code: str, db: Session = Depe
 
     license_key_raw = str(form.get("license_key") or "").strip()
     status_raw = str(form.get("status") or LicenseKeyStatus.active.value).strip()
+    description = normalize_license_description(str(form.get("description") or ""))
 
     status = parse_license_status(status_raw)
     if not status:
@@ -553,6 +565,7 @@ async def create_license(request: Request, company_code: str, db: Session = Depe
         hashed_key=hash_license_key(license_key),
         fingerprint=fingerprint,
         status=status,
+        description=description,
     )
     db.add(license_entry)
     db.commit()
@@ -595,6 +608,38 @@ async def update_license_status(request: Request, license_id: str, db: Session =
     db.commit()
 
     set_flash(request, message="License status updated")
+    return redirect_to(redirect_target)
+
+
+@router.post("/licenses/{license_id}/description")
+async def update_license_description(request: Request, license_id: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    company_code = str(form.get("company_code") or "").strip()
+    redirect_target = f"/admin-ui/tenants/{company_code}" if company_code else "/admin-ui/licenses"
+    csrf_error = require_csrf(request, form, redirect_target)
+    if csrf_error:
+        return csrf_error
+
+    try:
+        license_uuid = uuid.UUID(license_id)
+    except ValueError:
+        set_flash(request, error="Invalid license id")
+        return redirect_to(redirect_target)
+
+    license_entry = db.query(LicenseKey).filter(LicenseKey.id == license_uuid).first()
+    if not license_entry:
+        set_flash(request, error="License not found")
+        return redirect_to(redirect_target)
+
+    description = normalize_license_description(str(form.get("description") or ""))
+    license_entry.description = description
+    db.commit()
+
+    set_flash(request, message="License description updated")
     return redirect_to(redirect_target)
 
 

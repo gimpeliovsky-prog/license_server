@@ -1,4 +1,8 @@
 from app.schemas.admin import (
+    LicenseDiagnosticsLicenseInfo,
+    LicenseDiagnosticsRequest,
+    LicenseDiagnosticsResponse,
+    LicenseDiagnosticsTenantInfo,
     DeviceRevokeRequest,
     DeviceResponse,
     LicenseCreateRequest,
@@ -9,11 +13,22 @@ from app.schemas.admin import (
     TenantResponse,
     TenantStatusUpdateRequest,
 )
-from app.schemas.auth import ActivateRequest, TokenResponse
+from app.schemas.auth import (
+    ActivateRequest,
+    CurrentUserResponse,
+    LicenseValidateRequest,
+    LicenseValidateResponse,
+    PairingActivateRequest,
+    TokenResponse,
+)
 from app.schemas.status import StatusResponse
 
 __all__ = [
     "ActivateRequest",
+    "CurrentUserResponse",
+    "LicenseValidateRequest",
+    "LicenseValidateResponse",
+    "PairingActivateRequest",
     "TokenResponse",
     "StatusResponse",
     "TenantCreateRequest",
@@ -25,4 +40,8 @@ __all__ = [
     "LicenseStatusUpdateRequest",
     "DeviceResponse",
     "DeviceRevokeRequest",
+    "LicenseDiagnosticsRequest",
+    "LicenseDiagnosticsTenantInfo",
+    "LicenseDiagnosticsLicenseInfo",
+    "LicenseDiagnosticsResponse",
 ]

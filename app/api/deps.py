@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Device, Tenant, TenantStatus
 from app.services.auth import TokenData, TokenExpired, TokenInvalid, decode_access_token
+from app.services.permissions import resolve_app_permissions
 from app.services.rate_limit import RateLimiter
 from app.services.subscription import evaluate_subscription
 from app.utils.time import utcnow
@@ -25,6 +26,9 @@ class RequestContext:
     tenant: Tenant
     device: Device | None
     token: TokenData
+    erp_username: str | None
+    erp_roles: tuple[str, ...]
+    app_permissions: set[str]
     subscription_active: bool
     grace_active: bool
 
@@ -119,10 +123,30 @@ def get_request_context(
             device.last_seen = now
         db.commit()
 
+    permissions = set(token_data.app_permissions)
+    if not permissions and token_data.erp_roles:
+        permissions = resolve_app_permissions(token_data.erp_roles)
+
     return RequestContext(
         tenant=tenant,
         device=device,
         token=token_data,
+        erp_username=token_data.erp_username,
+        erp_roles=token_data.erp_roles,
+        app_permissions=permissions,
         subscription_active=state.subscription_active,
         grace_active=state.grace_active,
     )
+
+
+def get_erp_request_context(context: RequestContext = Depends(get_request_context)) -> RequestContext:
+    if not context.erp_username:
+        raise HTTPException(status_code=401, detail="ERP user authentication required")
+    return context
+
+
+def require_permissions(context: RequestContext, *required: str) -> None:
+    missing = [permission for permission in required if permission not in context.app_permissions]
+    if missing:
+        detail = ", ".join(sorted(missing))
+        raise HTTPException(status_code=403, detail=f"Permission denied: {detail}")
