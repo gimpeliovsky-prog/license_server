@@ -175,6 +175,42 @@ def build_admin_context(
     return context
 
 
+def fetch_license_diagnostics_logs(db: Session, limit: int = 50) -> list[dict]:
+    records = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "license_diagnostics")
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    tenant_ids = sorted({record.tenant_id for record in records if record.tenant_id})
+    tenant_codes: dict[uuid.UUID, str] = {}
+    if tenant_ids:
+        tenants = db.query(Tenant.id, Tenant.company_code).filter(Tenant.id.in_(tenant_ids)).all()
+        tenant_codes = {tenant_id: company_code for tenant_id, company_code in tenants}
+
+    rows: list[dict] = []
+    for record in records:
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        rows.append(
+            {
+                "created_at": record.created_at,
+                "tenant_id": record.tenant_id,
+                "tenant_company_code": tenant_codes.get(record.tenant_id),
+                "valid": meta.get("valid"),
+                "reason_code": meta.get("reason_code"),
+                "reason_detail": meta.get("reason_detail"),
+                "input_company_code": meta.get("input_company_code"),
+                "normalized_company_code": meta.get("normalized_company_code"),
+                "key_fingerprint": meta.get("key_fingerprint"),
+                "matched_license_id": meta.get("matched_license_id"),
+                "ip": meta.get("ip"),
+            }
+        )
+    return rows
+
+
 @router.get("/")
 def index() -> RedirectResponse:
     return redirect_to("/admin-ui/login")
@@ -1157,18 +1193,20 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/license-diagnostics")
-def license_diagnostics_page(request: Request):
+def license_diagnostics_page(request: Request, db: Session = Depends(get_db)):
     redirect_response = require_admin_or_redirect(request)
     if redirect_response:
         return redirect_response
 
     message, error, _ = pop_flash(request)
+    diagnostics_logs = fetch_license_diagnostics_logs(db=db)
     context = build_admin_context(
         request,
         "License Diagnostics",
         "licensing",
         "license-diagnostics",
         diagnostics=None,
+        diagnostics_logs=diagnostics_logs,
         form_license_key="",
         form_company_code="",
         message=message,
@@ -1212,12 +1250,14 @@ async def run_license_diagnostics(request: Request, db: Session = Depends(get_db
     except HTTPException as exc:
         error = str(exc.detail or "Diagnostics request failed.")
 
+    diagnostics_logs = fetch_license_diagnostics_logs(db=db)
     context = build_admin_context(
         request,
         "License Diagnostics",
         "licensing",
         "license-diagnostics",
         diagnostics=diagnostics,
+        diagnostics_logs=diagnostics_logs,
         form_license_key=raw_license_key,
         form_company_code=raw_company_code,
         error=error,

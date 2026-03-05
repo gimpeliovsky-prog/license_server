@@ -80,4 +80,51 @@
   </div>
 </div>
 {% endif %}
+
+<div class="panel">
+  <h2>Recent diagnostics logs</h2>
+  {% if diagnostics_logs %}
+  <div class="table-scroll">
+    <table class="table-plain-header">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Result</th>
+          <th>Reason</th>
+          <th>Company</th>
+          <th>Tenant</th>
+          <th>Fingerprint</th>
+          <th>IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in diagnostics_logs %}
+        <tr>
+          <td style="font-family: monospace;">{{ row.created_at.isoformat() }}</td>
+          <td>
+            {% if row.valid is sameas true %}valid{% elif row.valid is sameas false %}invalid{% else %}-{% endif %}
+          </td>
+          <td>
+            <div><code>{{ row.reason_code or "-" }}</code></div>
+            <div class="muted">{{ row.reason_detail or "-" }}</div>
+          </td>
+          <td>
+            <div>input: {{ row.input_company_code or "-" }}</div>
+            <div class="muted">normalized: {{ row.normalized_company_code or "-" }}</div>
+          </td>
+          <td>
+            <div>{{ row.tenant_company_code or "-" }}</div>
+            <div class="muted" style="font-family: monospace;">{{ row.tenant_id or "-" }}</div>
+          </td>
+          <td style="font-family: monospace;">{{ row.key_fingerprint or "-" }}</td>
+          <td style="font-family: monospace;">{{ row.ip or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No diagnostics logs yet.</p>
+  {% endif %}
+</div>
 {% endblock %}
