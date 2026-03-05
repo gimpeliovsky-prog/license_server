@@ -174,7 +174,7 @@ def build_admin_context(
 
 @router.get("/")
 def index() -> RedirectResponse:
-    return redirect_to("/admin-ui/licensing")
+    return redirect_to("/admin-ui/login")
 
 
 @router.get("/login")
