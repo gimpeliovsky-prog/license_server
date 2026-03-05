@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -161,6 +162,75 @@ def _parse_enabled(value: Any) -> bool:
 
 def _safe_json_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _resolve_tenant_id_by_company_code(db: Session, company_code: str | None) -> uuid.UUID | None:
+    if not company_code:
+        return None
+    normalized = company_code.strip().lower()
+    if not normalized:
+        return None
+    row = (
+        db.query(Tenant.id)
+        .filter(func.lower(Tenant.company_code) == normalized)
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _resolve_tenant_id_by_pairing_token(db: Session, raw_token: str | None) -> uuid.UUID | None:
+    if not raw_token:
+        return None
+    row = (
+        db.query(DevicePairingToken.tenant_id)
+        .filter(DevicePairingToken.token_hash == hash_pairing_token(raw_token))
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _log_auth_failure(
+    db: Session,
+    request: Request,
+    *,
+    action: str,
+    status_code: int,
+    detail: str,
+    tenant_id: uuid.UUID | None = None,
+    attempted_company_code: str | None = None,
+    attempted_device_id: str | None = None,
+    attempted_erp_username: str | None = None,
+    key_fingerprint: str | None = None,
+    pairing_token_hash_prefix: str | None = None,
+    extra_meta: dict[str, Any] | None = None,
+) -> None:
+    meta: dict[str, Any] = {
+        "ip": get_client_ip(request),
+        "status_code": status_code,
+        "detail": detail,
+        "attempted_company_code": attempted_company_code,
+        "attempted_device_id": attempted_device_id,
+        "attempted_erp_username": attempted_erp_username,
+        "key_fingerprint": key_fingerprint,
+        "pairing_token_hash_prefix": pairing_token_hash_prefix,
+    }
+    if extra_meta:
+        meta.update(extra_meta)
+
+    try:
+        db.rollback()
+        db.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                device_id=None,
+                action=action,
+                meta=meta,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to write auth failure audit event: %s", action)
 
 
 def _activate(
@@ -369,12 +439,46 @@ def _activate(
 
 @router.post("/activate", response_model=TokenResponse)
 def activate(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
-    return _activate(payload, request, db, allow_ota_access=True)
+    try:
+        return _activate(payload, request, db, allow_ota_access=True)
+    except HTTPException as exc:
+        company_code = payload.company_code.strip() if payload.company_code else None
+        _log_auth_failure(
+            db=db,
+            request=request,
+            action="activate_failed",
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+            tenant_id=_resolve_tenant_id_by_company_code(db, company_code),
+            attempted_company_code=company_code,
+            attempted_device_id=payload.device_id,
+            attempted_erp_username=(payload.erp_username.strip() if payload.erp_username else None),
+            key_fingerprint=fingerprint_license_key(payload.license_key.strip()) or None,
+            extra_meta={"allow_ota_access": True},
+        )
+        raise
 
 
 @router.post("/activate-erp", response_model=TokenResponse)
 def activate_erp(payload: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
-    return _activate(payload, request, db, allow_ota_access=False)
+    try:
+        return _activate(payload, request, db, allow_ota_access=False)
+    except HTTPException as exc:
+        company_code = payload.company_code.strip() if payload.company_code else None
+        _log_auth_failure(
+            db=db,
+            request=request,
+            action="activate_erp_failed",
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+            tenant_id=_resolve_tenant_id_by_company_code(db, company_code),
+            attempted_company_code=company_code,
+            attempted_device_id=payload.device_id,
+            attempted_erp_username=(payload.erp_username.strip() if payload.erp_username else None),
+            key_fingerprint=fingerprint_license_key(payload.license_key.strip()) or None,
+            extra_meta={"allow_ota_access": False},
+        )
+        raise
 
 
 @router.post("/validate-license", response_model=LicenseValidateResponse)
@@ -384,21 +488,34 @@ def validate_license(
     db: Session = Depends(get_db),
     ) -> LicenseValidateResponse:
     raw_key = payload.license_key.strip()
-    if not raw_key:
-        raise HTTPException(status_code=401, detail="License key invalid")
-
     company_code = payload.company_code.strip() if payload.company_code else None
-    rate_limit_key = company_code.lower() if company_code else f"license:{raw_key}"
-    rate_limit_activate(request, rate_limit_key)
+    try:
+        if not raw_key:
+            raise HTTPException(status_code=401, detail="License key invalid")
 
-    now = utcnow()
-    tenant = _resolve_tenant_for_license_validation(db, raw_key, company_code, now)
-    return LicenseValidateResponse(
-        valid=True,
-        tenant_id=tenant.id,
-        company_code=tenant.company_code,
-        server_time=now,
-    )
+        rate_limit_key = company_code.lower() if company_code else f"license:{raw_key}"
+        rate_limit_activate(request, rate_limit_key)
+
+        now = utcnow()
+        tenant = _resolve_tenant_for_license_validation(db, raw_key, company_code, now)
+        return LicenseValidateResponse(
+            valid=True,
+            tenant_id=tenant.id,
+            company_code=tenant.company_code,
+            server_time=now,
+        )
+    except HTTPException as exc:
+        _log_auth_failure(
+            db=db,
+            request=request,
+            action="validate_license_failed",
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+            tenant_id=_resolve_tenant_id_by_company_code(db, company_code),
+            attempted_company_code=company_code,
+            key_fingerprint=fingerprint_license_key(raw_key) or None,
+        )
+        raise
 
 
 @router.post("/pairing/activate", response_model=TokenResponse)
@@ -408,97 +525,111 @@ def activate_pairing(
     db: Session = Depends(get_db),
 ) -> TokenResponse:
     raw_token = payload.pairing_token.strip()
-    if not raw_token:
-        raise HTTPException(status_code=401, detail="Pairing token invalid")
+    try:
+        if not raw_token:
+            raise HTTPException(status_code=401, detail="Pairing token invalid")
 
-    rate_limit_activate(request, f"pairing:{payload.device_id}")
-    now = utcnow()
+        rate_limit_activate(request, f"pairing:{payload.device_id}")
+        now = utcnow()
 
-    pairing = (
-        db.query(DevicePairingToken)
-        .filter(DevicePairingToken.token_hash == hash_pairing_token(raw_token))
-        .with_for_update()
-        .first()
-    )
-    if not pairing:
-        raise HTTPException(status_code=401, detail="Pairing token invalid")
-    if pairing.used_at is not None:
-        raise HTTPException(status_code=409, detail="Pairing token already used")
-    if pairing.expires_at < now:
-        raise HTTPException(status_code=401, detail="Pairing token expired")
-    if not pairing.enabled:
-        raise HTTPException(status_code=403, detail="ERP user disabled")
-
-    tenant = db.query(Tenant).filter(Tenant.id == pairing.tenant_id).first()
-    if not tenant or tenant.status != TenantStatus.active:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    if tenant.subscription_expires_at < now:
-        raise HTTPException(status_code=403, detail="Subscription expired")
-    if not _tenant_has_active_license(db, tenant.id):
-        raise HTTPException(status_code=403, detail="No active license available")
-
-    identity = ERPUserIdentity(
-        username=pairing.erp_username,
-        roles=list(pairing.erp_roles or []),
-        full_name=pairing.full_name,
-        enabled=pairing.enabled,
-    )
-    upsert_erp_user_login(
-        db=db,
-        tenant_id=tenant.id,
-        identity=identity,
-        now=now,
-    )
-
-    device = (
-        db.query(Device)
-        .filter(Device.tenant_id == tenant.id, Device.device_id == payload.device_id)
-        .first()
-    )
-    if device and device.revoked:
-        raise HTTPException(status_code=403, detail="Device revoked")
-    if not device:
-        device = Device(device_id=payload.device_id, tenant_id=tenant.id, last_seen=now)
-        db.add(device)
-    else:
-        device.last_seen = now
-    db.flush()
-
-    app_permissions = sorted(resolve_app_permissions(identity.roles))
-    token, token_data = create_access_token(
-        tenant.id,
-        device_id=payload.device_id,
-        erp_username=identity.username,
-        erp_roles=identity.roles,
-        app_permissions=app_permissions,
-        issued_at=now,
-    )
-
-    pairing.used_at = now
-    pairing.used_device_id = payload.device_id
-
-    db.add(
-        AuditLog(
-            tenant_id=tenant.id,
-            device_id=device.id,
-            action="pairing_activate",
-            meta={
-                "ip": get_client_ip(request),
-                "erp_username": identity.username,
-                "erp_roles": identity.roles,
-                "app_permissions": app_permissions,
-                "pairing_token_id": str(pairing.id),
-            },
+        pairing = (
+            db.query(DevicePairingToken)
+            .filter(DevicePairingToken.token_hash == hash_pairing_token(raw_token))
+            .with_for_update()
+            .first()
         )
-    )
-    db.commit()
+        if not pairing:
+            raise HTTPException(status_code=401, detail="Pairing token invalid")
+        if pairing.used_at is not None:
+            raise HTTPException(status_code=409, detail="Pairing token already used")
+        if pairing.expires_at < now:
+            raise HTTPException(status_code=401, detail="Pairing token expired")
+        if not pairing.enabled:
+            raise HTTPException(status_code=403, detail="ERP user disabled")
 
-    return TokenResponse(
-        access_token=token,
-        issued_at=token_data.issued_at,
-        expires_at=token_data.expires_at,
-        server_time=now,
-    )
+        tenant = db.query(Tenant).filter(Tenant.id == pairing.tenant_id).first()
+        if not tenant or tenant.status != TenantStatus.active:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        if tenant.subscription_expires_at < now:
+            raise HTTPException(status_code=403, detail="Subscription expired")
+        if not _tenant_has_active_license(db, tenant.id):
+            raise HTTPException(status_code=403, detail="No active license available")
+
+        identity = ERPUserIdentity(
+            username=pairing.erp_username,
+            roles=list(pairing.erp_roles or []),
+            full_name=pairing.full_name,
+            enabled=pairing.enabled,
+        )
+        upsert_erp_user_login(
+            db=db,
+            tenant_id=tenant.id,
+            identity=identity,
+            now=now,
+        )
+
+        device = (
+            db.query(Device)
+            .filter(Device.tenant_id == tenant.id, Device.device_id == payload.device_id)
+            .first()
+        )
+        if device and device.revoked:
+            raise HTTPException(status_code=403, detail="Device revoked")
+        if not device:
+            device = Device(device_id=payload.device_id, tenant_id=tenant.id, last_seen=now)
+            db.add(device)
+        else:
+            device.last_seen = now
+        db.flush()
+
+        app_permissions = sorted(resolve_app_permissions(identity.roles))
+        token, token_data = create_access_token(
+            tenant.id,
+            device_id=payload.device_id,
+            erp_username=identity.username,
+            erp_roles=identity.roles,
+            app_permissions=app_permissions,
+            issued_at=now,
+        )
+
+        pairing.used_at = now
+        pairing.used_device_id = payload.device_id
+
+        db.add(
+            AuditLog(
+                tenant_id=tenant.id,
+                device_id=device.id,
+                action="pairing_activate",
+                meta={
+                    "ip": get_client_ip(request),
+                    "erp_username": identity.username,
+                    "erp_roles": identity.roles,
+                    "app_permissions": app_permissions,
+                    "pairing_token_id": str(pairing.id),
+                },
+            )
+        )
+        db.commit()
+
+        return TokenResponse(
+            access_token=token,
+            issued_at=token_data.issued_at,
+            expires_at=token_data.expires_at,
+            server_time=now,
+        )
+    except HTTPException as exc:
+        token_hash = hash_pairing_token(raw_token) if raw_token else None
+        _log_auth_failure(
+            db=db,
+            request=request,
+            action="pairing_activate_failed",
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+            tenant_id=_resolve_tenant_id_by_pairing_token(db, raw_token),
+            attempted_device_id=payload.device_id,
+            pairing_token_hash_prefix=(token_hash[:12] if token_hash else None),
+        )
+        raise
 
 
 @router.post("/refresh", response_model=TokenResponse)

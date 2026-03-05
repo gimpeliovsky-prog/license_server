@@ -10,6 +10,9 @@
   </p>
   <form method="post" action="/admin-ui/license-diagnostics">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="window_hours" value="{{ selected_window_hours }}">
+    <input type="hidden" name="scope" value="{{ selected_scope }}">
+    <input type="hidden" name="outcome" value="{{ selected_outcome }}">
     <div class="grid-2">
       <div>
         <label for="license_key">License key</label>
@@ -82,17 +85,45 @@
 {% endif %}
 
 <div class="panel">
-  <h2>Recent diagnostics logs</h2>
+  <h2>Event logs</h2>
+  <form method="get" action="/admin-ui/license-diagnostics" class="inline" style="margin-bottom: 12px;">
+    <label for="window_hours">Period (hours)</label>
+    <select id="window_hours" name="window_hours">
+      <option value="1" {% if selected_window_hours == 1 %}selected{% endif %}>1</option>
+      <option value="6" {% if selected_window_hours == 6 %}selected{% endif %}>6</option>
+      <option value="24" {% if selected_window_hours == 24 %}selected{% endif %}>24</option>
+      <option value="72" {% if selected_window_hours == 72 %}selected{% endif %}>72</option>
+      <option value="168" {% if selected_window_hours == 168 %}selected{% endif %}>168</option>
+    </select>
+    <label for="scope">Scope</label>
+    <select id="scope" name="scope">
+      <option value="auth" {% if selected_scope == "auth" %}selected{% endif %}>Connections</option>
+      <option value="diagnostics" {% if selected_scope == "diagnostics" %}selected{% endif %}>Diagnostics</option>
+      <option value="all" {% if selected_scope == "all" %}selected{% endif %}>All</option>
+    </select>
+    <label for="outcome">Outcome</label>
+    <select id="outcome" name="outcome">
+      <option value="all" {% if selected_outcome == "all" %}selected{% endif %}>All</option>
+      <option value="failed" {% if selected_outcome == "failed" %}selected{% endif %}>Failed only</option>
+      <option value="success" {% if selected_outcome == "success" %}selected{% endif %}>Success only</option>
+    </select>
+    <button type="submit" class="button-compact">Apply</button>
+  </form>
+  <p class="muted" style="margin-top: 0;">Showing up to 200 latest records for selected period.</p>
   {% if diagnostics_logs %}
   <div class="table-scroll">
     <table class="table-plain-header">
       <thead>
         <tr>
           <th>Time</th>
-          <th>Result</th>
+          <th>Event</th>
+          <th>Outcome</th>
+          <th>Status</th>
           <th>Reason</th>
           <th>Company</th>
           <th>Tenant</th>
+          <th>ERP user</th>
+          <th>Device</th>
           <th>Fingerprint</th>
           <th>IP</th>
         </tr>
@@ -101,21 +132,22 @@
         {% for row in diagnostics_logs %}
         <tr>
           <td style="font-family: monospace;">{{ row.created_at.isoformat() }}</td>
+          <td>{{ row.event_label }}</td>
           <td>
-            {% if row.valid is sameas true %}valid{% elif row.valid is sameas false %}invalid{% else %}-{% endif %}
+            {% if row.result == "failed" %}<span style="color:#b42318;">failed</span>{% else %}<span style="color:#067647;">success</span>{% endif %}
           </td>
-          <td>
-            <div><code>{{ row.reason_code or "-" }}</code></div>
-            <div class="muted">{{ row.reason_detail or "-" }}</div>
+          <td>{{ row.status_code or "-" }}</td>
+          <td class="muted">
+            <div><code>{{ row.action }}</code></div>
+            <div>{{ row.reason }}</div>
           </td>
-          <td>
-            <div>input: {{ row.input_company_code or "-" }}</div>
-            <div class="muted">normalized: {{ row.normalized_company_code or "-" }}</div>
-          </td>
+          <td>{{ row.company_code }}</td>
           <td>
             <div>{{ row.tenant_company_code or "-" }}</div>
             <div class="muted" style="font-family: monospace;">{{ row.tenant_id or "-" }}</div>
           </td>
+          <td>{{ row.erp_username }}</td>
+          <td style="font-family: monospace;">{{ row.device_id }}</td>
           <td style="font-family: monospace;">{{ row.key_fingerprint or "-" }}</td>
           <td style="font-family: monospace;">{{ row.ip or "-" }}</td>
         </tr>
@@ -124,7 +156,7 @@
     </table>
   </div>
   {% else %}
-  <p class="muted">No diagnostics logs yet.</p>
+  <p class="muted">No logs for selected filter.</p>
   {% endif %}
 </div>
 {% endblock %}

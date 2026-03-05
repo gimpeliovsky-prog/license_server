@@ -175,16 +175,86 @@ def build_admin_context(
     return context
 
 
-def fetch_license_diagnostics_logs(db: Session, limit: int = 50) -> list[dict]:
+LOG_SCOPE_OPTIONS = {"auth", "diagnostics", "all"}
+LOG_OUTCOME_OPTIONS = {"all", "failed", "success"}
+AUTH_LOG_ACTIONS = {
+    "activate",
+    "activate_failed",
+    "activate_erp_failed",
+    "pairing_activate",
+    "pairing_activate_failed",
+    "validate_license_failed",
+}
+DIAGNOSTICS_LOG_ACTIONS = {"license_diagnostics"}
+ACTION_LABELS = {
+    "activate": "Activate",
+    "activate_failed": "Activate",
+    "activate_erp_failed": "Activate ERP",
+    "pairing_activate": "Pairing activate",
+    "pairing_activate_failed": "Pairing activate",
+    "validate_license_failed": "Validate license",
+    "license_diagnostics": "License diagnostics",
+}
+
+
+def parse_log_window_hours(value: str | None, default: int = 24) -> int:
+    try:
+        parsed = int(str(value or default).strip())
+    except (TypeError, ValueError):
+        return default
+    if parsed < 1:
+        return default
+    return min(parsed, 24 * 30)
+
+
+def normalize_log_scope(value: str | None) -> str:
+    normalized = str(value or "auth").strip().lower()
+    return normalized if normalized in LOG_SCOPE_OPTIONS else "auth"
+
+
+def normalize_log_outcome(value: str | None) -> str:
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in LOG_OUTCOME_OPTIONS else "all"
+
+
+def _event_result(action: str, meta: dict) -> str:
+    if action.endswith("_failed"):
+        return "failed"
+    if action == "license_diagnostics":
+        valid = meta.get("valid")
+        if valid is True:
+            return "success"
+        if valid is False:
+            return "failed"
+    return "success"
+
+
+def fetch_license_event_logs(
+    db: Session,
+    *,
+    window_hours: int,
+    scope: str,
+    outcome: str,
+    limit: int = 200,
+) -> list[dict]:
+    if scope == "diagnostics":
+        actions = DIAGNOSTICS_LOG_ACTIONS
+    elif scope == "all":
+        actions = AUTH_LOG_ACTIONS | DIAGNOSTICS_LOG_ACTIONS
+    else:
+        actions = AUTH_LOG_ACTIONS
+
+    since_time = utcnow() - timedelta(hours=window_hours)
     records = (
         db.query(AuditLog)
-        .filter(AuditLog.action == "license_diagnostics")
+        .filter(AuditLog.created_at >= since_time)
+        .filter(AuditLog.action.in_(sorted(actions)))
         .order_by(AuditLog.created_at.desc())
         .limit(limit)
         .all()
     )
 
-    tenant_ids = sorted({record.tenant_id for record in records if record.tenant_id})
+    tenant_ids = list({record.tenant_id for record in records if record.tenant_id})
     tenant_codes: dict[uuid.UUID, str] = {}
     if tenant_ids:
         tenants = db.query(Tenant.id, Tenant.company_code).filter(Tenant.id.in_(tenant_ids)).all()
@@ -193,19 +263,38 @@ def fetch_license_diagnostics_logs(db: Session, limit: int = 50) -> list[dict]:
     rows: list[dict] = []
     for record in records:
         meta = record.meta if isinstance(record.meta, dict) else {}
+        result = _event_result(record.action, meta)
+        if outcome == "failed" and result != "failed":
+            continue
+        if outcome == "success" and result != "success":
+            continue
+
+        reason = (
+            meta.get("reason_detail")
+            or meta.get("detail")
+            or meta.get("reason_code")
+            or "-"
+        )
         rows.append(
             {
                 "created_at": record.created_at,
+                "action": record.action,
+                "event_label": ACTION_LABELS.get(record.action, record.action),
+                "result": result,
+                "reason": reason,
                 "tenant_id": record.tenant_id,
                 "tenant_company_code": tenant_codes.get(record.tenant_id),
-                "valid": meta.get("valid"),
-                "reason_code": meta.get("reason_code"),
-                "reason_detail": meta.get("reason_detail"),
-                "input_company_code": meta.get("input_company_code"),
-                "normalized_company_code": meta.get("normalized_company_code"),
-                "key_fingerprint": meta.get("key_fingerprint"),
-                "matched_license_id": meta.get("matched_license_id"),
-                "ip": meta.get("ip"),
+                "company_code": (
+                    meta.get("attempted_company_code")
+                    or meta.get("input_company_code")
+                    or tenant_codes.get(record.tenant_id)
+                    or "-"
+                ),
+                "erp_username": meta.get("attempted_erp_username") or meta.get("erp_username") or "-",
+                "device_id": meta.get("attempted_device_id") or meta.get("used_device_id") or "-",
+                "key_fingerprint": meta.get("key_fingerprint") or "-",
+                "ip": meta.get("ip") or "-",
+                "status_code": meta.get("status_code"),
             }
         )
     return rows
@@ -1198,8 +1287,17 @@ def license_diagnostics_page(request: Request, db: Session = Depends(get_db)):
     if redirect_response:
         return redirect_response
 
+    window_hours = parse_log_window_hours(request.query_params.get("window_hours"))
+    scope = normalize_log_scope(request.query_params.get("scope"))
+    outcome = normalize_log_outcome(request.query_params.get("outcome"))
+
     message, error, _ = pop_flash(request)
-    diagnostics_logs = fetch_license_diagnostics_logs(db=db)
+    diagnostics_logs = fetch_license_event_logs(
+        db=db,
+        window_hours=window_hours,
+        scope=scope,
+        outcome=outcome,
+    )
     context = build_admin_context(
         request,
         "License Diagnostics",
@@ -1207,6 +1305,9 @@ def license_diagnostics_page(request: Request, db: Session = Depends(get_db)):
         "license-diagnostics",
         diagnostics=None,
         diagnostics_logs=diagnostics_logs,
+        selected_window_hours=window_hours,
+        selected_scope=scope,
+        selected_outcome=outcome,
         form_license_key="",
         form_company_code="",
         message=message,
@@ -1226,6 +1327,10 @@ async def run_license_diagnostics(request: Request, db: Session = Depends(get_db
     csrf_error = require_csrf(request, form, "/admin-ui/license-diagnostics")
     if csrf_error:
         return csrf_error
+
+    window_hours = parse_log_window_hours(str(form.get("window_hours") or "24"))
+    scope = normalize_log_scope(str(form.get("scope") or "auth"))
+    outcome = normalize_log_outcome(str(form.get("outcome") or "all"))
 
     raw_license_key = str(form.get("license_key") or "").strip()
     raw_company_code = str(form.get("company_code") or "").strip()
@@ -1250,7 +1355,12 @@ async def run_license_diagnostics(request: Request, db: Session = Depends(get_db
     except HTTPException as exc:
         error = str(exc.detail or "Diagnostics request failed.")
 
-    diagnostics_logs = fetch_license_diagnostics_logs(db=db)
+    diagnostics_logs = fetch_license_event_logs(
+        db=db,
+        window_hours=window_hours,
+        scope=scope,
+        outcome=outcome,
+    )
     context = build_admin_context(
         request,
         "License Diagnostics",
@@ -1258,6 +1368,9 @@ async def run_license_diagnostics(request: Request, db: Session = Depends(get_db
         "license-diagnostics",
         diagnostics=diagnostics,
         diagnostics_logs=diagnostics_logs,
+        selected_window_hours=window_hours,
+        selected_scope=scope,
+        selected_outcome=outcome,
         form_license_key=raw_license_key,
         form_company_code=raw_company_code,
         error=error,
