@@ -149,6 +149,11 @@
       border-collapse: collapse;
       font-size: 14px;
     }
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
     th, td {
       text-align: left;
       padding: 8px;
@@ -234,6 +239,40 @@
     .inline-compact input[type="text"] { width: 110px; }
     .inline-compact input[type="checkbox"] { width: auto; margin: 0; }
     .inline label { margin: 0; font-size: 12px; }
+    .licenses-table {
+      table-layout: fixed;
+      min-width: 1120px;
+    }
+    .licenses-table th,
+    .licenses-table td {
+      vertical-align: top;
+    }
+    .licenses-table .col-id,
+    .licenses-table .col-fingerprint,
+    .licenses-table .col-created {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .licenses-table .col-description {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .licenses-table .col-actions {
+      min-width: 260px;
+    }
+    .license-desc-form.inline {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .license-desc-form.inline input[type="text"] {
+      min-width: 0;
+      width: 100%;
+    }
     .muted { color: var(--muted); }
     @keyframes fadeSlide {
       from { opacity: 0; transform: translateY(6px); }
@@ -245,6 +284,9 @@
       }
       aside {
         position: static;
+      }
+      .license-desc-form.inline {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -289,6 +331,7 @@
         <a href="/admin-ui/tenants" class="{% if active_page == 'tenants' %}active{% endif %}">Tenants</a>
         <a href="/admin-ui/licenses" class="{% if active_page == 'licenses' %}active{% endif %}">Licenses</a>
         <a href="/admin-ui/erp-allowlist" class="{% if active_page == 'erp-allowlist' %}active{% endif %}">ERP Allowlist</a>
+        <a href="/admin-ui/license-diagnostics" class="{% if active_page == 'license-diagnostics' %}active{% endif %}">License Diagnostics</a>
       </div>
       {% endif %}
     </aside>

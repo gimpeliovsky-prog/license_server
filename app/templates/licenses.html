@@ -6,40 +6,42 @@
 <div class="panel">
   <h2>All license keys</h2>
   {% if licenses %}
-  <table class="table-plain-header">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Tenant</th>
-        <th>Company name</th>
-        <th>Status</th>
-        <th>Fingerprint</th>
-        <th>Created</th>
-        <th>Description</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for key in licenses %}
-      <tr>
-        <td style="font-family: monospace;">{{ key.id }}</td>
-        <td><a href="/admin-ui/tenants/{{ key.tenant.company_code }}">{{ key.tenant.company_code }}</a></td>
-        <td>{{ key.tenant.company_name or "-" }}</td>
-        <td>{{ key.status.value }}</td>
-        <td style="font-family: monospace;">{{ key.fingerprint or "-" }}</td>
-        <td>{{ key.created_at.isoformat() }}</td>
-        <td>{{ key.description or "-" }}</td>
-        <td>
-          <form method="post" action="/admin-ui/licenses/{{ key.id }}/description" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="text" name="description" maxlength="512" value="{{ key.description or '' }}" placeholder="Description">
-            <button type="submit" class="button-compact">Save note</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="table-plain-header licenses-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Tenant</th>
+          <th>Company name</th>
+          <th>Status</th>
+          <th>Fingerprint</th>
+          <th>Created</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in licenses %}
+        <tr>
+          <td class="col-id">{{ key.id }}</td>
+          <td><a href="/admin-ui/tenants/{{ key.tenant.company_code }}">{{ key.tenant.company_code }}</a></td>
+          <td>{{ key.tenant.company_name or "-" }}</td>
+          <td>{{ key.status.value }}</td>
+          <td class="col-fingerprint">{{ key.fingerprint or "-" }}</td>
+          <td class="col-created">{{ key.created_at.isoformat() }}</td>
+          <td class="col-description">{{ key.description or "-" }}</td>
+          <td class="col-actions">
+            <form method="post" action="/admin-ui/licenses/{{ key.id }}/description" class="inline license-desc-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="text" name="description" maxlength="512" value="{{ key.description or '' }}" placeholder="Description">
+              <button type="submit" class="button-compact">Save note</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
   <p class="muted">No license keys.</p>
   {% endif %}

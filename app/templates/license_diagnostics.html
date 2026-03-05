@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>License Diagnostics</h1>
+
+<div class="panel">
+  <h2>Run diagnostics</h2>
+  <p class="muted">
+    Check license validity, tenant status, subscription state, and tenant/license mismatches.
+  </p>
+  <form method="post" action="/admin-ui/license-diagnostics">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="grid-2">
+      <div>
+        <label for="license_key">License key</label>
+        <input id="license_key" name="license_key" value="{{ form_license_key }}" minlength="8" maxlength="256" required>
+      </div>
+      <div>
+        <label for="company_code">Company code (optional)</label>
+        <input id="company_code" name="company_code" value="{{ form_company_code }}" maxlength="64" placeholder="menor">
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit">Run diagnostics</button>
+    </div>
+  </form>
+</div>
+
+{% if diagnostics %}
+<div class="panel">
+  <h2>Result</h2>
+  <div class="{% if diagnostics.valid %}message{% else %}error{% endif %}">
+    <div><strong>{% if diagnostics.valid %}VALID{% else %}INVALID{% endif %}</strong></div>
+    <div>Reason code: <code>{{ diagnostics.reason_code }}</code></div>
+    <div>{{ diagnostics.reason_detail }}</div>
+  </div>
+
+  <div class="grid-2">
+    <div>
+      <h3>Request</h3>
+      <table>
+        <tbody>
+          <tr><th>Server time</th><td>{{ diagnostics.server_time.isoformat() }}</td></tr>
+          <tr><th>Input company code</th><td>{{ diagnostics.input_company_code or "-" }}</td></tr>
+          <tr><th>Normalized code</th><td>{{ diagnostics.normalized_company_code or "-" }}</td></tr>
+          <tr><th>Key fingerprint</th><td style="font-family: monospace;">{{ diagnostics.key_fingerprint or "-" }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3>Tenant</h3>
+      <table>
+        <tbody>
+          <tr><th>ID</th><td style="font-family: monospace;">{{ diagnostics.tenant.id or "-" }}</td></tr>
+          <tr><th>Company code</th><td>{{ diagnostics.tenant.company_code or "-" }}</td></tr>
+          <tr><th>Status</th><td>{{ diagnostics.tenant.status or "-" }}</td></tr>
+          <tr><th>Subscription expires</th><td>{{ diagnostics.tenant.subscription_expires_at.isoformat() if diagnostics.tenant.subscription_expires_at else "-" }}</td></tr>
+          <tr><th>Subscription active</th><td>{% if diagnostics.tenant.subscription_active is none %}-{% elif diagnostics.tenant.subscription_active %}yes{% else %}no{% endif %}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div style="margin-top: 12px;">
+    <h3>Matched license</h3>
+    {% if diagnostics.matched_license %}
+    <table>
+      <tbody>
+        <tr><th>ID</th><td style="font-family: monospace;">{{ diagnostics.matched_license.id }}</td></tr>
+        <tr><th>Status</th><td>{{ diagnostics.matched_license.status or "-" }}</td></tr>
+        <tr><th>Tenant ID</th><td style="font-family: monospace;">{{ diagnostics.matched_license.tenant_id or "-" }}</td></tr>
+        <tr><th>Tenant company</th><td>{{ diagnostics.matched_license.tenant_company_code or "-" }}</td></tr>
+        <tr><th>Created</th><td>{{ diagnostics.matched_license.created_at.isoformat() if diagnostics.matched_license.created_at else "-" }}</td></tr>
+        <tr><th>Fingerprint</th><td style="font-family: monospace;">{{ diagnostics.matched_license.fingerprint or "-" }}</td></tr>
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No matching license found.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

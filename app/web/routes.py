@@ -3,12 +3,14 @@ import secrets
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.routes.admin import diagnose_license as api_diagnose_license
 from app.api.deps import get_client_ip, get_db
 from app.config import get_settings
 from app.models import (
@@ -34,6 +36,7 @@ from app.services.erpnext import normalize_erpnext_url
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.ota import OTAService
 from app.services.ota_binary import parse_esp_app_desc_version
+from app.schemas.admin import LicenseDiagnosticsRequest
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
@@ -1151,6 +1154,77 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
         csrf_token=get_csrf_token(request),
     )
     return templates.TemplateResponse("erp_allowlist.html", context)
+
+
+@router.get("/license-diagnostics")
+def license_diagnostics_page(request: Request):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    message, error, _ = pop_flash(request)
+    context = build_admin_context(
+        request,
+        "License Diagnostics",
+        "licensing",
+        "license-diagnostics",
+        diagnostics=None,
+        form_license_key="",
+        form_company_code="",
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+    )
+    return templates.TemplateResponse("license_diagnostics.html", context)
+
+
+@router.post("/license-diagnostics")
+async def run_license_diagnostics(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/license-diagnostics")
+    if csrf_error:
+        return csrf_error
+
+    raw_license_key = str(form.get("license_key") or "").strip()
+    raw_company_code = str(form.get("company_code") or "").strip()
+    company_code = raw_company_code or None
+
+    error = None
+    diagnostics = None
+
+    try:
+        payload = LicenseDiagnosticsRequest(
+            license_key=raw_license_key,
+            company_code=company_code,
+        )
+        diagnostics = api_diagnose_license(
+            payload=payload,
+            request=request,
+            db=db,
+        )
+    except ValidationError as exc:
+        details = "; ".join(err.get("msg", "Invalid input") for err in exc.errors())
+        error = details or "Invalid diagnostics input."
+    except HTTPException as exc:
+        error = str(exc.detail or "Diagnostics request failed.")
+
+    context = build_admin_context(
+        request,
+        "License Diagnostics",
+        "licensing",
+        "license-diagnostics",
+        diagnostics=diagnostics,
+        form_license_key=raw_license_key,
+        form_company_code=raw_company_code,
+        error=error,
+        message=None if error else "Diagnostics complete.",
+        csrf_token=get_csrf_token(request),
+    )
+    return templates.TemplateResponse("license_diagnostics.html", context)
 
 
 @router.post("/erp-allowlist/seed")
