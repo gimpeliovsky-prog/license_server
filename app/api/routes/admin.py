@@ -21,6 +21,7 @@ from app.schemas import (
     SubscriptionUpdateRequest,
     TenantCreateRequest,
     TenantResponse,
+    TenantSystemUpdateRequest,
     TenantStatusUpdateRequest,
 )
 from app.services.erpnext import normalize_erpnext_url
@@ -69,6 +70,7 @@ def serialize_tenant(tenant: Tenant) -> TenantResponse:
         company_name=tenant.company_name,
         erpnext_url=tenant.erpnext_url,
         status=tenant.status.value,
+        is_system=tenant.is_system,
         subscription_expires_at=tenant.subscription_expires_at,
     )
 
@@ -122,7 +124,7 @@ def _serialize_diagnostic_tenant(tenant: Tenant | None, now) -> LicenseDiagnosti
         company_code=tenant.company_code,
         status=tenant.status.value,
         subscription_expires_at=tenant.subscription_expires_at,
-        subscription_active=tenant.subscription_expires_at >= now,
+        subscription_active=tenant.is_system or tenant.subscription_expires_at >= now,
     )
 
 
@@ -169,6 +171,7 @@ def create_tenant(payload: TenantCreateRequest, db: Session = Depends(get_db)) -
         api_key=payload.api_key,
         api_secret=payload.api_secret,
         status=parse_tenant_status(payload.status),
+        is_system=payload.is_system,
         subscription_expires_at=payload.subscription_expires_at,
     )
     db.add(tenant)
@@ -183,6 +186,17 @@ def update_status(
 ) -> TenantResponse:
     tenant = get_tenant_or_404(db, company_code)
     tenant.status = parse_tenant_status(payload.status)
+    db.commit()
+    db.refresh(tenant)
+    return serialize_tenant(tenant)
+
+
+@router.patch("/tenants/{company_code}/system", response_model=TenantResponse)
+def update_system_flag(
+    company_code: str, payload: TenantSystemUpdateRequest, db: Session = Depends(get_db)
+) -> TenantResponse:
+    tenant = get_tenant_or_404(db, company_code)
+    tenant.is_system = bool(payload.is_system)
     db.commit()
     db.refresh(tenant)
     return serialize_tenant(tenant)
@@ -392,7 +406,7 @@ def diagnose_license(
 
             if matched_active_in_company:
                 matched_license = matched_active_in_company
-                if tenant.subscription_expires_at < now:
+                if tenant.subscription_expires_at < now and not tenant.is_system:
                     reason_code = "subscription_expired"
                     reason_detail = "Tenant subscription is expired."
                 else:
@@ -430,7 +444,7 @@ def diagnose_license(
                     if not resolved_tenant
                     else f"Tenant status is '{resolved_tenant.status.value}'."
                 )
-            elif resolved_tenant.subscription_expires_at < now:
+            elif resolved_tenant.subscription_expires_at < now and not resolved_tenant.is_system:
                 reason_code = "subscription_expired"
                 reason_detail = "Tenant subscription is expired."
             else:

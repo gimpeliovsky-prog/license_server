@@ -71,6 +71,12 @@ def parse_license_status(value: str) -> LicenseKeyStatus | None:
         return None
 
 
+def parse_bool_form(value) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def normalize_license_description(value: str | None) -> str | None:
     if value is None:
         return None
@@ -437,6 +443,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
     api_secret = str(form.get("api_secret") or "").strip()
     expires_at_raw = str(form.get("subscription_expires_at") or "").strip()
     status_raw = str(form.get("status") or TenantStatus.active.value).strip()
+    is_system = parse_bool_form(form.get("is_system"))
 
     if not company_code or not erpnext_url or not api_key or not api_secret or not expires_at_raw:
         set_flash(request, error="All fields are required")
@@ -464,6 +471,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
         api_key=api_key,
         api_secret=api_secret,
         status=status,
+        is_system=is_system,
         subscription_expires_at=expires_at,
     )
     db.add(tenant)
@@ -561,6 +569,28 @@ async def update_tenant_status(request: Request, company_code: str, db: Session 
     tenant.status = status
     db.commit()
     set_flash(request, message="Status updated")
+    return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+
+@router.post("/tenants/{company_code}/system")
+async def update_tenant_system(request: Request, company_code: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    tenant = get_tenant_or_none(db, company_code)
+    if not tenant:
+        set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/tenants")
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
+    tenant.is_system = parse_bool_form(form.get("is_system"))
+    db.commit()
+    set_flash(request, message="System mode updated")
     return redirect_to(f"/admin-ui/tenants/{company_code}")
 
 
@@ -1063,6 +1093,12 @@ async def update_ota_access(request: Request, db: Session = Depends(get_db)):
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/ota/access")
+    if not tenant.is_system:
+        set_flash(
+            request,
+            error="Selected tenant is not marked as system tenant. Enable system mode in tenant settings first.",
+        )
         return redirect_to("/admin-ui/ota/access")
 
     license_key = db.query(LicenseKey).filter(LicenseKey.id == license_id).first()

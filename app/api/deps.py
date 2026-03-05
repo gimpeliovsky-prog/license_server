@@ -99,13 +99,19 @@ def get_request_context(
         raise HTTPException(status_code=403, detail="Tenant disabled")
 
     now = utcnow()
-    state = evaluate_subscription(
-        subscription_expires_at=tenant.subscription_expires_at,
-        issued_at=token_data.issued_at,
-        now=now,
-    )
-    if not state.allowed:
-        raise HTTPException(status_code=403, detail="Subscription expired")
+    if tenant.is_system:
+        subscription_active = True
+        grace_active = False
+    else:
+        state = evaluate_subscription(
+            subscription_expires_at=tenant.subscription_expires_at,
+            issued_at=token_data.issued_at,
+            now=now,
+        )
+        if not state.allowed:
+            raise HTTPException(status_code=403, detail="Subscription expired")
+        subscription_active = state.subscription_active
+        grace_active = state.grace_active
 
     device = None
     if token_data.device_id:
@@ -134,8 +140,8 @@ def get_request_context(
         erp_username=token_data.erp_username,
         erp_roles=token_data.erp_roles,
         app_permissions=permissions,
-        subscription_active=state.subscription_active,
-        grace_active=state.grace_active,
+        subscription_active=subscription_active,
+        grace_active=grace_active,
     )
 
 

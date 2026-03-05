@@ -11,6 +11,7 @@ from app.schemas.admin import (
     SubscriptionUpdateRequest,
     TenantCreateRequest,
     TenantResponse,
+    TenantSystemUpdateRequest,
     TenantStatusUpdateRequest,
 )
 from app.schemas.auth import (
@@ -33,6 +34,7 @@ __all__ = [
     "StatusResponse",
     "TenantCreateRequest",
     "TenantResponse",
+    "TenantSystemUpdateRequest",
     "TenantStatusUpdateRequest",
     "SubscriptionUpdateRequest",
     "LicenseCreateRequest",

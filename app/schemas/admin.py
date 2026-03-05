@@ -12,6 +12,7 @@ class TenantCreateRequest(BaseModel):
     api_secret: str = Field(..., min_length=1, max_length=255)
     subscription_expires_at: datetime
     status: str = "active"
+    is_system: bool = False
 
 
 class TenantResponse(BaseModel):
@@ -20,11 +21,16 @@ class TenantResponse(BaseModel):
     company_name: str | None = None
     erpnext_url: str
     status: str
+    is_system: bool = False
     subscription_expires_at: datetime
 
 
 class TenantStatusUpdateRequest(BaseModel):
     status: str
+
+
+class TenantSystemUpdateRequest(BaseModel):
+    is_system: bool
 
 
 class SubscriptionUpdateRequest(BaseModel):

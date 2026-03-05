@@ -262,7 +262,7 @@ def _activate(
         if not tenant or tenant.status != TenantStatus.active:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        if tenant.subscription_expires_at < now:
+        if tenant.subscription_expires_at < now and not tenant.is_system:
             raise HTTPException(status_code=403, detail="Subscription expired")
 
         matched_key = (

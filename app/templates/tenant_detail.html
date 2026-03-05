@@ -17,6 +17,7 @@
       <tr><th>Company code</th><td>{{ tenant.company_code }}</td></tr>
       <tr><th>Company name</th><td>{{ tenant.company_name or "-" }}</td></tr>
       <tr><th>Status</th><td>{{ tenant.status.value }}</td></tr>
+      <tr><th>System tenant</th><td>{% if tenant.is_system %}yes{% else %}no{% endif %}</td></tr>
       <tr><th>Subscription expires</th><td>{{ tenant.subscription_expires_at.isoformat() }}</td></tr>
       <tr><th>ERPNext URL</th><td>{{ tenant.erpnext_url }}</td></tr>
       <tr><th>ERP credentials</th><td class="muted">Stored in DB</td></tr>
@@ -34,6 +35,16 @@
       {% endfor %}
     </select>
     <button type="submit" class="button-compact">Update</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>System mode</h2>
+  <p class="muted">System tenant skips subscription checks for OTA activation and token context.</p>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/system" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="is_system" value="true" {% if tenant.is_system %}checked{% endif %}> Enable system tenant mode</label>
+    <button type="submit" class="button-compact">Save</button>
   </form>
 </div>
 

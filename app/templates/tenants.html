@@ -17,6 +17,7 @@
         <th>Company code</th>
         <th>Company name</th>
         <th>Status</th>
+        <th>System</th>
         <th>Subscription expires</th>
         <th>ERPNext URL</th>
         <th></th>
@@ -28,6 +29,7 @@
         <td>{{ tenant.company_code }}</td>
         <td>{{ tenant.company_name or "-" }}</td>
         <td>{{ tenant.status.value }}</td>
+        <td>{% if tenant.is_system %}yes{% else %}no{% endif %}</td>
         <td>{{ tenant.subscription_expires_at.isoformat() }}</td>
         <td>{{ tenant.erpnext_url }}</td>
         <td><a href="/admin-ui/tenants/{{ tenant.company_code }}" class="button-pill">Open</a></td>
@@ -76,6 +78,10 @@
           <option value="{{ status }}">{{ status }}</option>
           {% endfor %}
         </select>
+      </div>
+      <div>
+        <label>System tenant (skip subscription for OTA)</label>
+        <input type="checkbox" name="is_system" value="true">
       </div>
     </div>
     <div style="margin-top: 12px;">
