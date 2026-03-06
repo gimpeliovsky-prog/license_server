@@ -434,6 +434,7 @@ def _activate(
         issued_at=token_data.issued_at,
         expires_at=token_data.expires_at,
         server_time=now,
+        erp_url=tenant.erpnext_url,
     )
 
 
@@ -616,6 +617,7 @@ def activate_pairing(
             issued_at=token_data.issued_at,
             expires_at=token_data.expires_at,
             server_time=now,
+            erp_url=tenant.erpnext_url,
         )
     except HTTPException as exc:
         token_hash = hash_pairing_token(raw_token) if raw_token else None
@@ -658,6 +660,7 @@ def refresh(request: Request, context=Depends(get_request_context)) -> TokenResp
         issued_at=token_data.issued_at,
         expires_at=token_data.expires_at,
         server_time=now,
+        erp_url=context.tenant.erpnext_url,
     )
 
 

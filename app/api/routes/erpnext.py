@@ -232,6 +232,60 @@ def get_item(
     return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
 
 
+@router.get("/files/{file_path:path}")
+def get_public_file(
+    file_path: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_ITEMS_READ)
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Item", allowlist)
+    normalized = (file_path or "").strip().lstrip("/")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="File path is required")
+    safe_path = quote(normalized, safe="/")
+    try:
+        response = request_erpnext(
+            context.tenant.erpnext_url,
+            context.tenant.api_key,
+            context.tenant.api_secret,
+            "GET",
+            f"/files/{safe_path}",
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return build_proxy_response(response.content, response.status_code, response.headers.get("content-type"))
+
+
+@router.get("/private/files/{file_path:path}")
+def get_private_file(
+    file_path: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_ITEMS_READ)
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Item", allowlist)
+    normalized = (file_path or "").strip().lstrip("/")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="File path is required")
+    safe_path = quote(normalized, safe="/")
+    try:
+        response = request_erpnext(
+            context.tenant.erpnext_url,
+            context.tenant.api_key,
+            context.tenant.api_secret,
+            "GET",
+            f"/private/files/{safe_path}",
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return build_proxy_response(response.content, response.status_code, response.headers.get("content-type"))
+
+
 @router.get("/bin")
 def get_bin(
     filters: str = Query(...),

@@ -35,6 +35,7 @@ class TokenResponse(BaseModel):
     issued_at: datetime
     expires_at: datetime
     server_time: datetime
+    erp_url: str | None = None
 
 
 class CurrentUserResponse(BaseModel):
