@@ -42,6 +42,60 @@
 </div>
 
 <div class="panel">
+  <h2>Import DocTypes From ERPNext</h2>
+  <form method="get" action="/admin-ui/erp-allowlist">
+    <div class="inline">
+      <select name="tenant_id" required>
+        <option value="">Select tenant...</option>
+        {% for tenant in tenants %}
+        <option value="{{ tenant.id }}" {% if selected_tenant_uuid and selected_tenant_uuid == tenant.id %}selected{% endif %}>
+          {{ tenant.company_code }} ({{ tenant.erpnext_url }})
+        </option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="button-secondary button-compact">Load DocTypes from ERP</button>
+    </div>
+  </form>
+  {% if fetched_doctypes %}
+  <form method="post" action="/admin-ui/erp-allowlist/doctypes/bulk" style="margin-top: 12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="tenant_id" value="{{ selected_tenant_id }}">
+    <div class="inline" style="margin-bottom: 8px;">
+      <input id="doctypeFilterInput" type="text" placeholder="Filter by name/module..." style="min-width: 260px;">
+      <label><input id="doctypeFilterRecommended" type="checkbox"> Recommended only</label>
+      <label><input id="doctypeFilterMissing" type="checkbox"> Missing only</label>
+      <label><input id="doctypeFilterCustom" type="checkbox"> Custom only</label>
+      <button id="doctypeSelectVisible" type="button" class="button-secondary button-compact">Select visible</button>
+      <button id="doctypeClearVisible" type="button" class="button-secondary button-compact">Clear visible</button>
+    </div>
+    <label>Available DocTypes (Ctrl/Cmd + click to select multiple)</label>
+    <select id="doctypeSelect" name="values" multiple size="18" style="width:100%; margin-top: 8px;">
+      {% for row in fetched_doctypes %}
+      <option
+        value="{{ row.name }}"
+        data-name="{{ row.name|lower }}"
+        data-module="{{ row.module|lower }}"
+        data-custom="{{ '1' if row.custom else '0' }}"
+        data-recommended="{{ '1' if row.recommended else '0' }}"
+        data-in-allowlist="{{ '1' if row.in_allowlist else '0' }}"
+      >
+        {{ row.name }}{% if row.module %} | module: {{ row.module }}{% endif %}{% if row.custom %} | custom{% endif %}
+        {% if row.recommended %} | recommended{% endif %}
+        {% if row.in_allowlist %} | already allowed{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    <div class="muted" id="doctypeVisibleCount" style="margin-top: 6px;">Visible: {{ fetched_doctypes|length }}</div>
+    <div class="inline" style="margin-top: 8px;">
+      <button type="submit" class="button-compact">Add selected DocTypes</button>
+    </div>
+  </form>
+  {% elif selected_tenant_id %}
+  <p class="muted" style="margin-top: 10px;">No DocTypes returned by ERP for selected tenant.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
   <h2>Methods</h2>
   <form method="post" action="/admin-ui/erp-allowlist/methods">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -84,6 +138,10 @@
   <p class="muted">
     If the allowlist is empty, the proxy uses ERP_ALLOWED_DOCTYPES and ERP_ALLOWED_METHODS from .env.
   </p>
+  <form method="post" action="/admin-ui/erp-allowlist/seed-mobile" style="margin-bottom: 10px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button-secondary button-compact" type="submit">Load mobile app profile</button>
+  </form>
   <form method="post" action="/admin-ui/erp-allowlist/seed">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="button-secondary button-compact" type="submit">Load defaults into DB</button>
@@ -100,5 +158,70 @@
     </div>
   </div>
   {% endif %}
+  {% if recommended_doctypes %}
+  <div style="margin-top: 12px;">
+    <label>Mobile profile doctypes</label>
+    <div class="muted">{{ recommended_doctypes | join(", ") }}</div>
+  </div>
+  {% endif %}
 </div>
+
+{% if fetched_doctypes %}
+<script>
+  (function () {
+    const select = document.getElementById("doctypeSelect");
+    const input = document.getElementById("doctypeFilterInput");
+    const recommended = document.getElementById("doctypeFilterRecommended");
+    const missing = document.getElementById("doctypeFilterMissing");
+    const custom = document.getElementById("doctypeFilterCustom");
+    const selectVisibleBtn = document.getElementById("doctypeSelectVisible");
+    const clearVisibleBtn = document.getElementById("doctypeClearVisible");
+    const visibleCount = document.getElementById("doctypeVisibleCount");
+    if (!select) return;
+
+    function isVisible(option) {
+      return !option.hidden;
+    }
+
+    function applyFilter() {
+      const q = (input && input.value ? input.value : "").trim().toLowerCase();
+      let count = 0;
+      Array.from(select.options).forEach((option) => {
+        const name = option.dataset.name || "";
+        const module = option.dataset.module || "";
+        const isRecommended = option.dataset.recommended === "1";
+        const isInAllowlist = option.dataset.inAllowlist === "1";
+        const isCustom = option.dataset.custom === "1";
+        const matchesText = !q || name.includes(q) || module.includes(q);
+        const matchesRecommended = !recommended.checked || isRecommended;
+        const matchesMissing = !missing.checked || !isInAllowlist;
+        const matchesCustom = !custom.checked || isCustom;
+        const show = matchesText && matchesRecommended && matchesMissing && matchesCustom;
+        option.hidden = !show;
+        if (show) count += 1;
+      });
+      if (visibleCount) {
+        visibleCount.textContent = "Visible: " + count;
+      }
+    }
+
+    function setSelectionForVisible(selected) {
+      Array.from(select.options).forEach((option) => {
+        if (isVisible(option)) {
+          option.selected = selected;
+        }
+      });
+    }
+
+    if (input) input.addEventListener("input", applyFilter);
+    if (recommended) recommended.addEventListener("change", applyFilter);
+    if (missing) missing.addEventListener("change", applyFilter);
+    if (custom) custom.addEventListener("change", applyFilter);
+    if (selectVisibleBtn) selectVisibleBtn.addEventListener("click", () => setSelectionForVisible(true));
+    if (clearVisibleBtn) clearVisibleBtn.addEventListener("click", () => setSelectionForVisible(false));
+
+    applyFilter();
+  })();
+</script>
+{% endif %}
 {% endblock %}

@@ -5,6 +5,27 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import ERPAllowlistEntry, ERPAllowlistType
 
+MOBILE_APP_DOCTYPES: tuple[str, ...] = (
+    "Pick List",
+    "Sales Order",
+    "Purchase Order",
+    "Item",
+    "Item Barcode",
+    "Barcodes",
+    "Bin",
+    "Warehouse",
+    "Customer",
+    "Stock Settings",
+    "Translation",
+    "Item Price",
+    "Price List",
+    "Pricing Rule",
+    "Item Tax Template",
+    "Sales Taxes and Charges Template",
+)
+
+MOBILE_APP_METHODS: tuple[str, ...] = ("GET", "POST", "PUT")
+
 
 @dataclass(frozen=True)
 class Allowlist:
@@ -26,6 +47,18 @@ def has_allowlist_entries(db: Session) -> bool:
 
 def seed_allowlist_from_settings(db: Session) -> int:
     settings = get_settings()
+    return merge_allowlist_entries(db, settings.erp_allowed_doctypes, settings.erp_allowed_methods)
+
+
+def seed_allowlist_mobile_profile(db: Session) -> int:
+    return merge_allowlist_entries(db, MOBILE_APP_DOCTYPES, MOBILE_APP_METHODS)
+
+
+def merge_allowlist_entries(
+    db: Session,
+    doctypes: list[str] | tuple[str, ...] | set[str],
+    methods: list[str] | tuple[str, ...] | set[str],
+) -> int:
     existing = {
         (entry.entry_type, entry.value)
         for entry in db.query(ERPAllowlistEntry).all()
@@ -33,7 +66,7 @@ def seed_allowlist_from_settings(db: Session) -> int:
     entries: list[ERPAllowlistEntry] = []
     inserted = 0
 
-    for raw in settings.erp_allowed_doctypes:
+    for raw in doctypes:
         normalized = normalize_doctype(raw)
         key = (ERPAllowlistType.doctype, normalized)
         if normalized and key not in existing:
@@ -43,7 +76,7 @@ def seed_allowlist_from_settings(db: Session) -> int:
             existing.add(key)
             inserted += 1
 
-    for raw in settings.erp_allowed_methods:
+    for raw in methods:
         normalized = normalize_method(raw)
         key = (ERPAllowlistType.method, normalized)
         if normalized and key not in existing:

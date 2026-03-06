@@ -1,4 +1,5 @@
 import hmac
+import json
 import secrets
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
@@ -26,13 +27,15 @@ from app.models import (
 )
 from app.models.firmware import DeviceOTALog, Firmware
 from app.services.allowlist import (
+    MOBILE_APP_DOCTYPES,
     has_allowlist_entries,
     normalize_doctype,
     normalize_method,
+    seed_allowlist_mobile_profile,
     seed_allowlist_from_settings,
 )
 from app.services.rate_limit import RateLimiter
-from app.services.erpnext import normalize_erpnext_url
+from app.services.erpnext import ERPNextError, normalize_erpnext_url, request_erpnext
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.ota import OTAService
 from app.services.ota_binary import parse_esp_app_desc_version
@@ -82,6 +85,79 @@ def normalize_license_description(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _safe_json_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def fetch_tenant_doctypes(tenant: Tenant) -> list[dict[str, object]]:
+    fields = json.dumps(["name", "module", "custom", "issingle", "istable"], separators=(",", ":"))
+    limit = 500
+    start = 0
+    rows: list[dict[str, object]] = []
+
+    while True:
+        response = request_erpnext(
+            tenant.erpnext_url,
+            tenant.api_key,
+            tenant.api_secret,
+            "GET",
+            "/api/resource/DocType",
+            params={
+                "fields": fields,
+                "limit_page_length": limit,
+                "limit_start": start,
+                "order_by": "name asc",
+            },
+        )
+        if response.status_code >= 400:
+            detail = response.text.strip()
+            try:
+                parsed = _safe_json_dict(response.json())
+                message = parsed.get("message")
+                exc = parsed.get("exc")
+                if isinstance(message, str) and message.strip():
+                    detail = message.strip()
+                elif isinstance(exc, str) and exc.strip():
+                    detail = exc.strip()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=502,
+                detail=f"ERP DocType fetch failed (HTTP {response.status_code}): {detail or 'unknown error'}",
+            )
+
+        payload = _safe_json_dict(response.json())
+        data = payload.get("data")
+        if not isinstance(data, list):
+            break
+
+        batch: list[dict[str, object]] = []
+        for item in data:
+            row = _safe_json_dict(item)
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            batch.append(
+                {
+                    "name": name,
+                    "module": str(row.get("module") or "").strip(),
+                    "custom": bool(row.get("custom")),
+                    "issingle": bool(row.get("issingle")),
+                    "istable": bool(row.get("istable")),
+                }
+            )
+
+        rows.extend(batch)
+        if len(data) < limit:
+            break
+        start += len(data)
+        if start >= 10000:
+            break
+
+    rows.sort(key=lambda item: str(item.get("name") or "").lower())
+    return rows
 
 
 def is_admin(request: Request) -> bool:
@@ -1299,8 +1375,41 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
         .order_by(ERPAllowlistEntry.value.asc())
         .all()
     )
+    tenants = db.query(Tenant).order_by(Tenant.company_code.asc()).all()
+
+    selected_tenant_id = str(request.query_params.get("tenant_id") or "").strip()
+    selected_tenant_uuid: uuid.UUID | None = None
+    fetched_doctypes: list[dict[str, object]] = []
+    recommended_doctypes = sorted({normalize_doctype(item) for item in MOBILE_APP_DOCTYPES if item})
+    recommended_keys = {item.lower() for item in recommended_doctypes}
+    allowlist_doctype_keys = {entry.value.lower() for entry in doctypes}
 
     message, error, _ = pop_flash(request)
+    if selected_tenant_id:
+        try:
+            tenant_uuid = uuid.UUID(selected_tenant_id)
+        except ValueError:
+            error = error or "Invalid tenant id"
+        else:
+            selected_tenant_uuid = tenant_uuid
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+            if tenant is None:
+                error = error or "Tenant not found"
+            else:
+                try:
+                    fetched_doctypes = fetch_tenant_doctypes(tenant)
+                    for row in fetched_doctypes:
+                        name = normalize_doctype(str(row.get("name") or ""))
+                        key = name.lower()
+                        row["recommended"] = key in recommended_keys
+                        row["in_allowlist"] = key in allowlist_doctype_keys
+                except ERPNextError as exc:
+                    error = error or f"ERP request failed: {exc}"
+                except HTTPException as exc:
+                    error = error or str(exc.detail)
+                except Exception as exc:
+                    error = error or f"ERP DocType fetch failed: {exc}"
+
     context = build_admin_context(
         request,
         "ERP Allowlist",
@@ -1310,6 +1419,11 @@ def erp_allowlist_page(request: Request, db: Session = Depends(get_db)):
         methods=methods,
         defaults_doctypes=settings.erp_allowed_doctypes,
         defaults_methods=settings.erp_allowed_methods,
+        tenants=tenants,
+        selected_tenant_id=selected_tenant_id,
+        selected_tenant_uuid=selected_tenant_uuid,
+        recommended_doctypes=recommended_doctypes,
+        fetched_doctypes=fetched_doctypes,
         message=message,
         error=error,
         csrf_token=get_csrf_token(request),
@@ -1435,6 +1549,82 @@ async def seed_allowlist(request: Request, db: Session = Depends(get_db)):
     else:
         set_flash(request, error="No defaults configured in .env")
     return redirect_to("/admin-ui/erp-allowlist")
+
+
+@router.post("/erp-allowlist/seed-mobile")
+async def seed_allowlist_mobile(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
+
+    inserted = seed_allowlist_mobile_profile(db)
+    if inserted > 0:
+        set_flash(request, message=f"Mobile app profile merged into allowlist (+{inserted})")
+    else:
+        set_flash(request, message="Allowlist already contains the mobile app profile")
+    return redirect_to("/admin-ui/erp-allowlist")
+
+
+@router.post("/erp-allowlist/doctypes/bulk")
+async def add_allowlist_doctypes_bulk(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/erp-allowlist")
+    if csrf_error:
+        return csrf_error
+
+    selected_tenant_id = str(form.get("tenant_id") or "").strip()
+    selected_values = [normalize_doctype(str(value)) for value in form.getlist("values")]
+    selected_values = [value for value in selected_values if value]
+    selected_values = list(dict.fromkeys(selected_values))
+
+    if not selected_values:
+        set_flash(request, error="Select at least one DocType to add")
+        suffix = f"?tenant_id={selected_tenant_id}" if selected_tenant_id else ""
+        return redirect_to(f"/admin-ui/erp-allowlist{suffix}")
+
+    if not has_allowlist_entries(db):
+        seed_allowlist_from_settings(db)
+
+    existing = (
+        db.query(ERPAllowlistEntry)
+        .filter(ERPAllowlistEntry.entry_type == ERPAllowlistType.doctype)
+        .all()
+    )
+    existing_names = {entry.value.lower() for entry in existing}
+
+    inserted = 0
+    for value in selected_values:
+        if value.lower() in existing_names:
+            continue
+        db.add(ERPAllowlistEntry(entry_type=ERPAllowlistType.doctype, value=value))
+        existing_names.add(value.lower())
+        inserted += 1
+
+    if inserted > 0:
+        try:
+            db.commit()
+            skipped = len(selected_values) - inserted
+            if skipped > 0:
+                set_flash(request, message=f"Added {inserted} DocType(s), skipped {skipped} existing")
+            else:
+                set_flash(request, message=f"Added {inserted} DocType(s)")
+        except IntegrityError:
+            db.rollback()
+            set_flash(request, error="Failed to add some DocTypes (duplicate entries)")
+    else:
+        set_flash(request, message="Selected DocTypes are already in allowlist")
+
+    suffix = f"?tenant_id={selected_tenant_id}" if selected_tenant_id else ""
+    return redirect_to(f"/admin-ui/erp-allowlist{suffix}")
 
 
 @router.post("/erp-allowlist/doctypes")
