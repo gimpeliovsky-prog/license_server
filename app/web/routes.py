@@ -35,10 +35,17 @@ from app.services.allowlist import (
     seed_allowlist_from_settings,
 )
 from app.services.rate_limit import RateLimiter
-from app.services.erpnext import ERPNextError, normalize_erpnext_url, request_erpnext
+from app.services.erpnext import (
+    ERPNextError,
+    ERPNextValidationError,
+    normalize_erpnext_url,
+    request_erpnext,
+    validate_erpnext_credentials,
+)
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.ota import OTAService
 from app.services.ota_binary import parse_esp_app_desc_version
+from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.schemas.admin import LicenseDiagnosticsRequest
 from app.utils.time import utcnow
 
@@ -540,6 +547,12 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
         set_flash(request, error="Invalid date format")
         return redirect_to("/admin-ui/tenants")
 
+    try:
+        validated_user = validate_erpnext_credentials(erpnext_url, api_key, api_secret)
+    except ERPNextValidationError as exc:
+        set_flash(request, error=str(exc))
+        return redirect_to("/admin-ui/tenants")
+
     tenant = Tenant(
         company_code=company_code,
         company_name=company_name or None,
@@ -553,7 +566,7 @@ async def create_tenant(request: Request, db: Session = Depends(get_db)):
     db.add(tenant)
     db.commit()
 
-    set_flash(request, message="Tenant created")
+    set_flash(request, message=f"Tenant created. ERP validated as {validated_user}")
     return redirect_to("/admin-ui/tenants")
 
 
@@ -603,16 +616,26 @@ def list_licenses(request: Request, db: Session = Depends(get_db)):
     licenses = (
         db.query(LicenseKey)
         .join(Tenant, LicenseKey.tenant_id == Tenant.id)
-        .order_by(LicenseKey.created_at.desc())
+        .order_by(Tenant.company_code.asc(), LicenseKey.created_at.desc())
         .all()
     )
+    license_groups: list[dict[str, object]] = []
+    grouped_by_tenant: dict[uuid.UUID, dict[str, object]] = {}
+    for license_entry in licenses:
+        tenant = license_entry.tenant
+        group = grouped_by_tenant.get(tenant.id)
+        if group is None:
+            group = {"tenant": tenant, "licenses": []}
+            grouped_by_tenant[tenant.id] = group
+            license_groups.append(group)
+        group["licenses"].append(license_entry)
 
     context = build_admin_context(
         request,
         "Licenses",
         "licensing",
         "licenses",
-        licenses=licenses,
+        license_groups=license_groups,
         message=message,
         error=error,
         csrf_token=get_csrf_token(request),
@@ -740,19 +763,7 @@ async def delete_tenant(request: Request, company_code: str, db: Session = Depen
         set_flash(request, error="Tenant not found")
         return redirect_to("/admin-ui/tenants")
 
-    device_ids = [
-        row.id for row in db.query(Device.id).filter(Device.tenant_id == tenant.id).all()
-    ]
-    audit_query = db.query(AuditLog)
-    if device_ids:
-        audit_query = audit_query.filter(
-            (AuditLog.tenant_id == tenant.id) | (AuditLog.device_id.in_(device_ids))
-        )
-    else:
-        audit_query = audit_query.filter(AuditLog.tenant_id == tenant.id)
-    audit_query.delete(synchronize_session=False)
-
-    db.delete(tenant)
+    delete_tenant_with_dependencies(db, tenant)
     db.commit()
     set_flash(request, message="Tenant deleted")
     return redirect_to("/admin-ui/tenants")

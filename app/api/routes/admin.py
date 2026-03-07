@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_client_ip, get_db, require_admin
-from app.models import AuditLog, Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
+from app.models import Device, LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.schemas import (
     DeviceRevokeRequest,
     DeviceResponse,
@@ -24,12 +24,17 @@ from app.schemas import (
     TenantSystemUpdateRequest,
     TenantStatusUpdateRequest,
 )
-from app.services.erpnext import normalize_erpnext_url
+from app.services.erpnext import (
+    ERPNextValidationError,
+    normalize_erpnext_url,
+    validate_erpnext_credentials,
+)
 from app.services.license import (
     fingerprint_license_key,
     hash_license_key,
     verify_license_key_flexible,
 )
+from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -164,6 +169,11 @@ def create_tenant(payload: TenantCreateRequest, db: Session = Depends(get_db)) -
     if not normalized_url:
         raise HTTPException(status_code=400, detail="ERPNext URL is required")
 
+    try:
+        validate_erpnext_credentials(normalized_url, payload.api_key, payload.api_secret)
+    except ERPNextValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     tenant = Tenant(
         company_code=payload.company_code,
         company_name=(payload.company_name or "").strip() or None,
@@ -230,18 +240,7 @@ def update_subscription(
 @router.delete("/tenants/{company_code}", status_code=204)
 def delete_tenant(company_code: str, db: Session = Depends(get_db)) -> None:
     tenant = get_tenant_or_404(db, company_code)
-    device_ids = [
-        row.id for row in db.query(Device.id).filter(Device.tenant_id == tenant.id).all()
-    ]
-    audit_query = db.query(AuditLog)
-    if device_ids:
-        audit_query = audit_query.filter(
-            (AuditLog.tenant_id == tenant.id) | (AuditLog.device_id.in_(device_ids))
-        )
-    else:
-        audit_query = audit_query.filter(AuditLog.tenant_id == tenant.id)
-    audit_query.delete(synchronize_session=False)
-    db.delete(tenant)
+    delete_tenant_with_dependencies(db, tenant)
     db.commit()
     return None
 
