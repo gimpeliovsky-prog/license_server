@@ -11,7 +11,6 @@ MOBILE_APP_DOCTYPES: tuple[str, ...] = (
     "Purchase Order",
     "Item",
     "Item Barcode",
-    "Barcodes",
     "Bin",
     "Warehouse",
     "Customer",

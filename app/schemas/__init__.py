@@ -20,6 +20,8 @@ from app.schemas.auth import (
     LicenseValidateRequest,
     LicenseValidateResponse,
     PairingActivateRequest,
+    PairingRegisterRequest,
+    PairingRegisterResponse,
     TokenResponse,
 )
 from app.schemas.status import StatusResponse
@@ -30,6 +32,8 @@ __all__ = [
     "LicenseValidateRequest",
     "LicenseValidateResponse",
     "PairingActivateRequest",
+    "PairingRegisterRequest",
+    "PairingRegisterResponse",
     "TokenResponse",
     "StatusResponse",
     "TenantCreateRequest",

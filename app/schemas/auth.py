@@ -29,6 +29,19 @@ class PairingActivateRequest(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=128)
 
 
+class PairingRegisterRequest(BaseModel):
+    subdomain: str = Field(..., min_length=1, max_length=63)
+    erp_username: str = Field(..., min_length=1, max_length=128)
+    erp_password: str = Field(..., min_length=1, max_length=256)
+
+
+class PairingRegisterResponse(BaseModel):
+    pairing_token: str
+    expires_at: datetime
+    server_time: datetime
+    erp_url: str | None = None
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

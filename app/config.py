@@ -68,7 +68,6 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "Pick List",
             "Item",
-            "Barcodes",
             "Translation",
             "Bin",
             "Warehouse",

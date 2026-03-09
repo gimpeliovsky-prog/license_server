@@ -1,5 +1,7 @@
 import logging
+import re
 import uuid
+from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -7,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.api.deps import (
     get_client_ip,
     get_db,
@@ -32,6 +35,8 @@ from app.schemas import (
     LicenseValidateRequest,
     LicenseValidateResponse,
     PairingActivateRequest,
+    PairingRegisterRequest,
+    PairingRegisterResponse,
     TokenResponse,
 )
 from app.services.auth import create_access_token
@@ -39,12 +44,34 @@ from app.services.erp_user_auth import ERPUserAuthError, ERPUserIdentity, authen
 from app.services.erpnext import ERPNextError, request_erpnext
 from app.services.erp_user_sync import upsert_erp_user_login
 from app.services.license import fingerprint_license_key, verify_license_key_flexible
-from app.services.pairing import hash_pairing_token
+from app.services.pairing import create_pairing_token, hash_pairing_token
 from app.services.permissions import resolve_app_permissions
 from app.utils.time import utcnow
 
 router = APIRouter(tags=["auth"])
 logger = logging.getLogger(__name__)
+settings = get_settings()
+PAIRING_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _normalize_pairing_subdomain(value: str) -> str:
+    text = value.strip().lower()
+    if not PAIRING_SUBDOMAIN_RE.fullmatch(text):
+        return ""
+    return text
+
+
+def _pairing_domain_suffix() -> str:
+    suffix = settings.pairing_domain_suffix.strip()
+    if suffix.startswith("https://"):
+        suffix = suffix[len("https://"):]
+    elif suffix.startswith("http://"):
+        suffix = suffix[len("http://"):]
+    return suffix.strip().lstrip(".").rstrip("/")
+
+
+def _build_pairing_erp_url(subdomain: str) -> str:
+    return f"https://{subdomain}.{_pairing_domain_suffix()}"
 
 
 def _resolve_tenant_for_license_validation(
@@ -630,6 +657,88 @@ def activate_pairing(
             tenant_id=_resolve_tenant_id_by_pairing_token(db, raw_token),
             attempted_device_id=payload.device_id,
             pairing_token_hash_prefix=(token_hash[:12] if token_hash else None),
+        )
+        raise
+
+
+@router.post("/pairing/register", response_model=PairingRegisterResponse)
+def register_pairing(
+    payload: PairingRegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> PairingRegisterResponse:
+    normalized_subdomain = _normalize_pairing_subdomain(payload.subdomain)
+    normalized_username = payload.erp_username.strip()
+    raw_password = payload.erp_password
+    try:
+        if not normalized_subdomain:
+            raise HTTPException(status_code=400, detail="Invalid company code. Use letters, numbers, and hyphen.")
+        if not normalized_username or not raw_password:
+            raise HTTPException(status_code=400, detail="ERP username and password are required.")
+
+        rate_limit_activate(request, f"pairing-register:{normalized_subdomain}")
+        now = utcnow()
+        target_url = _build_pairing_erp_url(normalized_subdomain)
+
+        tenant = (
+            db.query(Tenant)
+            .filter(func.lower(Tenant.erpnext_url) == target_url.lower())
+            .first()
+        )
+        if not tenant or tenant.status != TenantStatus.active:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        if tenant.subscription_expires_at < now:
+            raise HTTPException(status_code=403, detail="Subscription expired.")
+        if not _tenant_has_active_license(db, tenant.id):
+            raise HTTPException(status_code=403, detail="No active license for this tenant.")
+
+        try:
+            identity = authenticate_erp_user(tenant.erpnext_url, normalized_username, raw_password)
+        except ERPUserAuthError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+        if not identity.enabled:
+            raise HTTPException(status_code=403, detail="ERP user disabled.")
+
+        expires_at = now + timedelta(minutes=max(settings.pairing_token_ttl_minutes, 1))
+        pairing_token = create_pairing_token(
+            db=db,
+            tenant_id=tenant.id,
+            identity=identity,
+            expires_at=expires_at,
+            created_ip=get_client_ip(request),
+        )
+        upsert_erp_user_login(db=db, tenant_id=tenant.id, identity=identity, now=now)
+        db.add(
+            AuditLog(
+                tenant_id=tenant.id,
+                device_id=None,
+                action="pairing_register",
+                meta={
+                    "ip": get_client_ip(request),
+                    "erp_username": identity.username,
+                    "erp_roles": identity.roles,
+                    "subdomain": normalized_subdomain,
+                },
+            )
+        )
+        db.commit()
+
+        return PairingRegisterResponse(
+            pairing_token=pairing_token,
+            expires_at=expires_at,
+            server_time=now,
+            erp_url=tenant.erpnext_url,
+        )
+    except HTTPException as exc:
+        _log_auth_failure(
+            db=db,
+            request=request,
+            action="pairing_register_failed",
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+            attempted_company_code=normalized_subdomain or None,
+            attempted_erp_username=normalized_username or None,
         )
         raise
 
