@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Process Jobs</h1>
+
+{% if selected_auto_refresh %}
+<script>
+  setTimeout(function () {
+    window.location.reload();
+  }, 15000);
+</script>
+{% endif %}
+
+<div class="panel">
+  <h2>Summary</h2>
+  <p class="muted">Server-side process jobs for Pick List completion and Delivery Note creation.</p>
+  <p class="muted" style="margin-top: 0;">
+    Monitoring status:
+    {% if summary.health_status == "ok" %}
+    <strong style="color:#067647;">ok</strong>
+    {% else %}
+    <strong style="color:#b42318;">{{ summary.health_status }}</strong>
+    {% endif %}
+    · stale threshold {{ stale_after_minutes }} min
+  </p>
+  <div class="section-tabs">
+    <a class="button-ghost {% if selected_status == 'all' %}active{% endif %}" href="/admin-ui/process-jobs?window_hours={{ selected_window_hours }}&company_code={{ selected_company_code }}&q={{ selected_query }}{% if selected_auto_refresh %}&auto_refresh=1{% endif %}">All</a>
+    <a class="button-ghost {% if selected_status == 'failed' %}active{% endif %}" href="/admin-ui/process-jobs?window_hours={{ selected_window_hours }}&status=failed&company_code={{ selected_company_code }}&q={{ selected_query }}{% if selected_auto_refresh %}&auto_refresh=1{% endif %}">Failed</a>
+    <a class="button-ghost {% if selected_status == 'running' %}active{% endif %}" href="/admin-ui/process-jobs?window_hours={{ selected_window_hours }}&status=running&company_code={{ selected_company_code }}&q={{ selected_query }}{% if selected_auto_refresh %}&auto_refresh=1{% endif %}">Running</a>
+    <a class="button-ghost {% if selected_status == 'pending' %}active{% endif %}" href="/admin-ui/process-jobs?window_hours={{ selected_window_hours }}&status=pending&company_code={{ selected_company_code }}&q={{ selected_query }}{% if selected_auto_refresh %}&auto_refresh=1{% endif %}">Pending</a>
+    <a class="button-ghost {% if selected_status == 'succeeded' %}active{% endif %}" href="/admin-ui/process-jobs?window_hours={{ selected_window_hours }}&status=succeeded&company_code={{ selected_company_code }}&q={{ selected_query }}{% if selected_auto_refresh %}&auto_refresh=1{% endif %}">Succeeded</a>
+  </div>
+  <div class="grid-2">
+    <div>
+      <table>
+        <tbody>
+          <tr><th>Total</th><td>{{ summary.total }}</td></tr>
+          <tr><th>Pending</th><td>{{ summary.pending }}</td></tr>
+          <tr><th>Running</th><td>{{ summary.running }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tbody>
+          <tr><th>Succeeded</th><td>{{ summary.succeeded }}</td></tr>
+          <tr><th>Failed</th><td>{{ summary.failed }}</td></tr>
+          <tr><th>Stale</th><td>{{ summary.stale }}</td></tr>
+          <tr><th>Window</th><td>{{ selected_window_hours }}h</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Diagnostics API</h2>
+  <p class="muted" style="margin-top: 0;">Use these JSON endpoints for external monitoring or scripted cleanup.</p>
+  <div class="grid-2">
+    <div>
+      <div><code>/admin/process-jobs?window_hours={{ selected_window_hours }}&status={{ selected_status }}{% if selected_company_code %}&company_code={{ selected_company_code }}{% endif %}{% if selected_query %}&q={{ selected_query }}{% endif %}</code></div>
+      <div><code>/admin/process-jobs/summary?window_hours={{ selected_window_hours }}&status={{ selected_status }}{% if selected_company_code %}&company_code={{ selected_company_code }}{% endif %}</code></div>
+    </div>
+    <div class="muted">
+      Authenticate with <code>X-Admin-Token</code>.
+      Cleanup endpoint: <code>POST /admin/process-jobs/cleanup</code>.
+      Requeue endpoint: <code>POST /admin/process-jobs/&lt;job_id&gt;/requeue</code>.
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Filters</h2>
+  <form method="get" action="/admin-ui/process-jobs" class="inline" style="flex-wrap: wrap; gap: 12px;">
+    <label for="window_hours">Period (hours)</label>
+    <select id="window_hours" name="window_hours">
+      <option value="1" {% if selected_window_hours == 1 %}selected{% endif %}>1</option>
+      <option value="6" {% if selected_window_hours == 6 %}selected{% endif %}>6</option>
+      <option value="24" {% if selected_window_hours == 24 %}selected{% endif %}>24</option>
+      <option value="72" {% if selected_window_hours == 72 %}selected{% endif %}>72</option>
+      <option value="168" {% if selected_window_hours == 168 %}selected{% endif %}>168</option>
+    </select>
+    <label for="status">Status</label>
+    <select id="status" name="status">
+      <option value="all" {% if selected_status == "all" %}selected{% endif %}>All</option>
+      <option value="pending" {% if selected_status == "pending" %}selected{% endif %}>Pending</option>
+      <option value="running" {% if selected_status == "running" %}selected{% endif %}>Running</option>
+      <option value="succeeded" {% if selected_status == "succeeded" %}selected{% endif %}>Succeeded</option>
+      <option value="failed" {% if selected_status == "failed" %}selected{% endif %}>Failed</option>
+    </select>
+    <label for="company_code">Company code</label>
+    <input id="company_code" name="company_code" value="{{ selected_company_code }}" placeholder="menor" style="width: 140px;">
+    <label for="q">Search</label>
+    <input id="q" name="q" value="{{ selected_query }}" placeholder="pick list, delivery note, correlation id" style="width: 260px;">
+    <label class="inline"><input type="checkbox" name="auto_refresh" value="1" {% if selected_auto_refresh %}checked{% endif %}> Auto-refresh 15s</label>
+    <button type="submit" class="button-compact">Apply</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Retention Cleanup</h2>
+  <p class="muted" style="margin-top: 0;">Delete or preview old terminal jobs without touching the live queue.</p>
+  <form method="post" action="/admin-ui/process-jobs/cleanup" class="inline" style="flex-wrap: wrap; gap: 12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="retention_days">Retention (days)</label>
+    <input id="retention_days" name="retention_days" type="number" min="1" value="{{ default_retention_days }}" style="width: 110px;">
+    <label for="cleanup_limit">Batch limit</label>
+    <input id="cleanup_limit" name="limit" type="number" min="1" value="{{ default_cleanup_limit }}" style="width: 110px;">
+    <label class="inline"><input type="checkbox" name="statuses" value="succeeded"> Succeeded</label>
+    <label class="inline"><input type="checkbox" name="statuses" value="failed"> Failed</label>
+    <label class="inline"><input type="checkbox" name="dry_run" value="1" checked> Dry run</label>
+    <button type="submit" class="button-compact">Run cleanup</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Jobs</h2>
+  <p class="muted" style="margin-top: 0;">Showing up to 200 latest jobs for selected filter. Jobs marked stale stayed pending/running for {{ stale_after_minutes }}+ minutes.</p>
+  {% if jobs %}
+  <div class="table-scroll">
+    <table class="table-plain-header">
+      <thead>
+        <tr>
+          <th>Created</th>
+          <th>Updated</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Company</th>
+          <th>Pick List</th>
+          <th>Delivery Note</th>
+          <th>Correlation</th>
+          <th>Age</th>
+          <th>Error</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in jobs %}
+        <tr {% if row.is_stale %}style="background:#fff3f0;"{% endif %}>
+          <td style="font-family: monospace;">{{ row.created_at.isoformat() }}</td>
+          <td style="font-family: monospace;">{{ row.updated_at.isoformat() }}</td>
+          <td>
+            <div>{{ row.job_type_label }}</div>
+            <div class="muted"><code>{{ row.job_type }}</code></div>
+          </td>
+          <td>
+            {% if row.status == "failed" %}
+            <span style="color:#b42318; font-weight:600;">{{ row.status }}</span>
+            {% elif row.status == "succeeded" %}
+            <span style="color:#067647; font-weight:600;">{{ row.status }}</span>
+            {% else %}
+            <span style="color:#1d4ed8; font-weight:600;">{{ row.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ row.tenant_company_code }}</td>
+          <td style="font-family: monospace;">{{ row.pick_list_name }}</td>
+          <td style="font-family: monospace;">{{ row.delivery_note_name }}</td>
+          <td style="font-family: monospace;">{{ row.correlation_id }}</td>
+          <td>
+            <div>{{ row.age_minutes }} min</div>
+            {% if row.is_stale %}<div style="color:#b42318; font-weight:600;">stale</div>{% endif %}
+          </td>
+          <td class="muted">{{ row.error_message or "-" }}</td>
+          <td>
+            {% if row.status == "failed" %}
+            <form method="post" action="/admin-ui/process-jobs/{{ row.id }}/retry">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="button-compact">Retry</button>
+            </form>
+            {% elif row.status == "running" and row.is_stale %}
+            <form method="post" action="/admin-ui/process-jobs/{{ row.id }}/requeue">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="button-compact">Requeue</button>
+            </form>
+            {% else %}
+            <span class="muted">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No process jobs for selected filter.</p>
+  {% endif %}
+</div>
+{% endblock %}

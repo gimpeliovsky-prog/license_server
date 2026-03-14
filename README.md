@@ -178,3 +178,100 @@ docker compose exec api python scripts/license_admin.py revoke-device --company-
 ```bash
 docker compose exec api pytest
 ```
+
+---
+
+## Process Jobs Monitoring
+
+Admin JSON endpoints:
+- `GET /admin/process-jobs`
+- `GET /admin/process-jobs/summary`
+- `POST /admin/process-jobs/cleanup`
+
+All these endpoints require header `X-Admin-Token`.
+
+Examples:
+
+```bash
+curl -H "X-Admin-Token: $ADMIN_TOKEN" \
+  "https://license.example.com/admin/process-jobs/summary?window_hours=1"
+```
+
+```bash
+curl -H "X-Admin-Token: $ADMIN_TOKEN" \
+  "https://license.example.com/admin/process-jobs?window_hours=24&status=failed"
+```
+
+```bash
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"retention_days":30,"statuses":["succeeded","failed"],"limit":500,"dry_run":true}' \
+  "https://license.example.com/admin/process-jobs/cleanup"
+```
+
+CLI helper:
+
+```bash
+python scripts/process_job_monitor.py \
+  --base-url https://license.example.com \
+  --admin-token "$ADMIN_TOKEN" \
+  summary --window-hours 1
+```
+
+```bash
+python scripts/process_job_monitor.py \
+  --base-url https://license.example.com \
+  --admin-token "$ADMIN_TOKEN" \
+  check --window-hours 1 --failed-threshold 1 --stale-threshold 1 --show-jobs
+```
+
+```bash
+python scripts/process_job_monitor.py \
+  --base-url https://license.example.com \
+  --admin-token "$ADMIN_TOKEN" \
+  cleanup --retention-days 30 --statuses succeeded failed --limit 500 --dry-run
+```
+
+Process execution:
+- `api` serves HTTP
+- `worker` executes queued process jobs from DB
+- in compose files the web service runs with `PROCESS_JOB_RUNNER_ENABLED=false`
+- the dedicated worker runs with `PROCESS_JOB_RUNNER_ENABLED=true`
+
+Recommended Docker deployment:
+
+1. Copy `.env.example` to `.env` and fill secrets.
+2. Run migrations:
+
+```bash
+docker compose --profile tools run --rm migrate
+```
+
+3. Start the stack:
+
+```bash
+docker compose up -d db api worker
+```
+
+4. For HTTPS with self-signed nginx:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.selfsigned.yml up -d
+```
+
+5. For HTTPS with Let's Encrypt:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.letsencrypt.yml up -d
+```
+
+For `docker-compose.frappe.yml` use:
+
+```bash
+docker compose -f docker-compose.frappe.yml --profile tools run --rm license_migrate
+docker compose -f docker-compose.frappe.yml up -d license_db license_api license_worker
+```
+
+Detailed Docker operations runbook:
+- `DOCKER_PRODUCTION.md`
+- `Makefile` for common Docker operations
+- `.gitlab-ci.yml` + `scripts/docker_deploy.sh` for backup-first deploy

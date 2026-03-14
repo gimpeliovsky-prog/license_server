@@ -1,11 +1,39 @@
+import json
+import uuid
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from urllib.parse import quote
 
 from app.api.deps import get_db, get_erp_request_context, require_permissions
+from app.schemas import (
+    PickListCompleteRequest,
+    PickListCompleteResponse,
+    PickListFromSalesOrderCreateRequest,
+    PickListFromSalesOrderCreateResponse,
+    PickListFromSalesOrderPreviewResponse,
+    PickListFromSalesOrderRequest,
+    PickListFromSalesOrderShortageResponse,
+    ProcessJobResponse,
+)
+from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
 from app.services.erpnext import ERPNextError, default_fields, request_erpnext
 from app.services.idempotency import build_request_hash, extract_idempotency_key, get_replay_if_match, store_response
+from app.models import ProcessJob
+from app.services.picklist_process import (
+    PickListProcessError,
+    create_delivery_note_from_pick_list,
+    create_pick_list_from_preview,
+    preview_pick_list_from_sales_order,
+)
+from app.services.process_jobs import (
+    JOB_TYPE_PICKLIST_COMPLETE,
+    create_process_job,
+)
+from app.services.process_job_runner import notify_process_job_runner
 from app.services.permissions import (
     PERMISSION_CUSTOMERS_READ,
     PERMISSION_ITEMS_READ,
@@ -22,6 +50,25 @@ from app.services.permissions import (
 )
 
 router = APIRouter(tags=["erpnext"])
+
+
+def process_error_detail(
+    *,
+    message: str,
+    reason_code: str,
+    retryable: bool = False,
+    erp_refused: bool = True,
+) -> dict[str, object]:
+    return {
+        "message": message,
+        "reason_code": reason_code,
+        "retryable": retryable,
+        "erp_refused": erp_refused,
+    }
+
+
+def raise_process_http_error(exc: PickListProcessError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=exc.to_detail()) from exc
 
 
 def resolve_fields(requested: str | None, fallback: list[str]) -> str:
@@ -59,6 +106,57 @@ def extract_params(request: Request) -> dict[str, str] | None:
 def build_proxy_response(content: bytes | str, status_code: int, content_type: str | None, replayed: bool = False) -> Response:
     headers = {"X-Idempotency-Replayed": "1"} if replayed else None
     return Response(content=content, status_code=status_code, media_type=content_type, headers=headers)
+
+
+def build_json_replay_response(replay) -> JSONResponse:
+    return JSONResponse(
+        content=json.loads(replay.body) if replay.body else None,
+        status_code=replay.status_code,
+        headers={"X-Idempotency-Replayed": "1"},
+    )
+
+
+def store_json_idempotent_response(
+    db: Session,
+    context,
+    *,
+    method: str,
+    endpoint: str,
+    idempotency_key: str | None,
+    request_hash: str | None,
+    payload,
+    status_code: int = 200,
+) -> JSONResponse:
+    encoded = json.dumps(jsonable_encoder(payload), ensure_ascii=False)
+    if idempotency_key and request_hash:
+        concurrent_replay = store_response(
+            db,
+            context.tenant.id,
+            method,
+            endpoint,
+            idempotency_key,
+            request_hash,
+            status_code,
+            "application/json",
+            encoded.encode("utf-8"),
+        )
+        if concurrent_replay:
+            return build_json_replay_response(concurrent_replay)
+    return JSONResponse(content=json.loads(encoded), status_code=status_code)
+
+
+def ensure_picklist_process_supported(allowlist: Allowlist) -> None:
+    ensure_method_allowed("GET", allowlist)
+    ensure_method_allowed("POST", allowlist)
+    get_allowed_doctype("Sales Order", allowlist)
+    get_allowed_doctype("Pick List", allowlist)
+
+
+def ensure_delivery_note_process_supported(allowlist: Allowlist) -> None:
+    ensure_method_allowed("GET", allowlist)
+    ensure_method_allowed("POST", allowlist)
+    get_allowed_doctype("Pick List", allowlist)
+    get_allowed_doctype("Delivery Note", allowlist)
 
 
 @router.get("/picklists")
@@ -397,6 +495,409 @@ def create_picklist(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+
+
+@router.post(
+    "/process/picklists/from-sales-order/preview",
+    response_model=PickListFromSalesOrderPreviewResponse,
+)
+def preview_picklist_from_sales_order_process(
+    request: Request,
+    payload: PickListFromSalesOrderRequest,
+    db: Session = Depends(get_db),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_SALES_ORDERS_READ, PERMISSION_PICKLISTS_WRITE)
+    ensure_picklist_process_supported(allowlist)
+    idempotency_key = extract_idempotency_key(request)
+    endpoint = "/process/picklists/from-sales-order/preview"
+    request_payload = payload.model_dump(mode="json")
+    request_hash = build_request_hash(request_payload) if idempotency_key else None
+    if idempotency_key and request_hash:
+        replay = get_replay_if_match(db, context.tenant.id, "POST", endpoint, idempotency_key, request_hash)
+        if replay:
+            return build_json_replay_response(replay)
+    try:
+        preview = preview_pick_list_from_sales_order(context.tenant, payload.sales_order_name)
+    except PickListProcessError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_preview_failed",
+            meta={
+                "sales_order_name": payload.sales_order_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise_process_http_error(exc)
+    except ERPNextError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_preview_failed",
+            meta={
+                "sales_order_name": payload.sales_order_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail=process_error_detail(
+                message=str(exc),
+                reason_code="erp_unavailable",
+                retryable=True,
+                erp_refused=False,
+            ),
+        ) from exc
+
+    response_payload = PickListFromSalesOrderPreviewResponse(
+        sales_order_name=preview.sales_order_name,
+        allocated_line_count=preview.allocated_line_count,
+        shortage_count=len(preview.shortages),
+        can_create=preview.allocated_line_count > 0,
+        shortages=[
+            PickListFromSalesOrderShortageResponse(
+                item_code=item.item_code,
+                item_name=item.item_name,
+                requested_qty=item.requested_qty,
+                allocated_qty=item.allocated_qty,
+                shortage_qty=item.shortage_qty,
+            )
+            for item in preview.shortages
+        ],
+    )
+    write_audit_log(
+        db,
+        context,
+        action="picklist_preview_succeeded",
+        meta={
+            "sales_order_name": payload.sales_order_name,
+            "allocated_line_count": preview.allocated_line_count,
+            "shortage_count": len(preview.shortages),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
+    )
+    db.commit()
+    return store_json_idempotent_response(
+        db,
+        context,
+        method="POST",
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        payload=response_payload,
+    )
+
+
+@router.post(
+    "/process/picklists/from-sales-order",
+    response_model=PickListFromSalesOrderCreateResponse,
+)
+def create_picklist_from_sales_order_process(
+    request: Request,
+    payload: PickListFromSalesOrderCreateRequest,
+    db: Session = Depends(get_db),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_SALES_ORDERS_READ, PERMISSION_PICKLISTS_WRITE)
+    ensure_picklist_process_supported(allowlist)
+    idempotency_key = extract_idempotency_key(request)
+    endpoint = "/process/picklists/from-sales-order"
+    request_payload = payload.model_dump(mode="json")
+    request_hash = build_request_hash(request_payload) if idempotency_key else None
+    if idempotency_key and request_hash:
+        replay = get_replay_if_match(db, context.tenant.id, "POST", endpoint, idempotency_key, request_hash)
+        if replay:
+            return build_json_replay_response(replay)
+    try:
+        preview = preview_pick_list_from_sales_order(context.tenant, payload.sales_order_name)
+        if preview.allocated_line_count <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail=process_error_detail(
+                    message="ERPNext did not allocate stock for this Sales Order",
+                    reason_code="no_stock_allocated",
+                    retryable=False,
+                    erp_refused=True,
+                ),
+            )
+        if preview.shortages and not payload.allow_partial:
+            raise HTTPException(
+                status_code=409,
+                detail=process_error_detail(
+                    message="Shortages detected for this Sales Order",
+                    reason_code="stock_shortage",
+                    retryable=False,
+                    erp_refused=True,
+                ),
+            )
+        pick_list_name = create_pick_list_from_preview(context.tenant, preview)
+    except PickListProcessError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_create_failed",
+            meta={
+                "sales_order_name": payload.sales_order_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise_process_http_error(exc)
+    except ERPNextError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_create_failed",
+            meta={
+                "sales_order_name": payload.sales_order_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail=process_error_detail(
+                message=str(exc),
+                reason_code="erp_unavailable",
+                retryable=True,
+                erp_refused=False,
+            ),
+        ) from exc
+
+    response_payload = PickListFromSalesOrderCreateResponse(
+        sales_order_name=preview.sales_order_name,
+        pick_list_name=pick_list_name,
+        allocated_line_count=preview.allocated_line_count,
+        shortage_count=len(preview.shortages),
+        has_shortages=bool(preview.shortages),
+    )
+    write_audit_log(
+        db,
+        context,
+        action="picklist_create_succeeded",
+        meta={
+            "sales_order_name": payload.sales_order_name,
+            "pick_list_name": pick_list_name,
+            "allocated_line_count": preview.allocated_line_count,
+            "shortage_count": len(preview.shortages),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
+    )
+    db.commit()
+    return store_json_idempotent_response(
+        db,
+        context,
+        method="POST",
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        payload=response_payload,
+    )
+
+
+@router.post(
+    "/process/picklists/{pick_list_name}/complete",
+    response_model=PickListCompleteResponse,
+)
+def complete_picklist_process(
+    request: Request,
+    pick_list_name: str,
+    payload: PickListCompleteRequest,
+    db: Session = Depends(get_db),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_PICKLISTS_WRITE)
+    ensure_delivery_note_process_supported(allowlist)
+    idempotency_key = extract_idempotency_key(request)
+    endpoint = f"/process/picklists/{pick_list_name}/complete"
+    request_payload = payload.model_dump(mode="json")
+    request_hash = build_request_hash(request_payload) if idempotency_key else None
+    if idempotency_key and request_hash:
+        replay = get_replay_if_match(db, context.tenant.id, "POST", endpoint, idempotency_key, request_hash)
+        if replay:
+            return build_json_replay_response(replay)
+    try:
+        delivery_note_name = None
+        if payload.create_delivery_note:
+            delivery_note_name = create_delivery_note_from_pick_list(context.tenant, pick_list_name)
+    except PickListProcessError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_complete_failed",
+            meta={
+                "pick_list_name": pick_list_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise_process_http_error(exc)
+    except ERPNextError as exc:
+        write_audit_log(
+            db,
+            context,
+            action="picklist_complete_failed",
+            meta={
+                "pick_list_name": pick_list_name,
+                "detail": str(exc),
+                "correlation_id": getattr(request.state, "correlation_id", None),
+            },
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail=process_error_detail(
+                message=str(exc),
+                reason_code="erp_unavailable",
+                retryable=True,
+                erp_refused=False,
+            ),
+        ) from exc
+
+    response_payload = PickListCompleteResponse(
+        pick_list_name=pick_list_name,
+        delivery_note_created=delivery_note_name is not None,
+        delivery_note_name=delivery_note_name,
+    )
+    write_audit_log(
+        db,
+        context,
+        action="picklist_complete_succeeded",
+        meta={
+            "pick_list_name": pick_list_name,
+            "delivery_note_name": delivery_note_name,
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
+    )
+    db.commit()
+    return store_json_idempotent_response(
+        db,
+        context,
+        method="POST",
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        payload=response_payload,
+    )
+
+
+@router.post(
+    "/process/picklists/{pick_list_name}/complete-async",
+    response_model=ProcessJobResponse,
+)
+def complete_picklist_process_async(
+    request: Request,
+    pick_list_name: str,
+    payload: PickListCompleteRequest,
+    db: Session = Depends(get_db),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_PICKLISTS_WRITE)
+    ensure_delivery_note_process_supported(allowlist)
+    idempotency_key = extract_idempotency_key(request)
+    endpoint = f"/process/picklists/{pick_list_name}/complete-async"
+    request_payload = {"pick_list_name": pick_list_name, **payload.model_dump(mode="json")}
+    request_hash = build_request_hash(request_payload) if idempotency_key else None
+    if idempotency_key and request_hash:
+        replay = get_replay_if_match(db, context.tenant.id, "POST", endpoint, idempotency_key, request_hash)
+        if replay:
+            return build_json_replay_response(replay)
+
+    request_key = None
+    if idempotency_key:
+        request_key = f"{context.tenant.id}:POST:{endpoint}:{idempotency_key}"
+    job = create_process_job(
+        db,
+        tenant_id=context.tenant.id,
+        device_id=context.device.id if context.device else None,
+        job_type=JOB_TYPE_PICKLIST_COMPLETE,
+        correlation_id=getattr(request.state, "correlation_id", None),
+        request_key=request_key,
+        request_meta={
+            "pick_list_name": pick_list_name,
+            "create_delivery_note": payload.create_delivery_note,
+        },
+    )
+    notify_process_job_runner()
+    write_audit_log(
+        db,
+        context,
+        action="picklist_complete_async_queued",
+        meta={
+            "pick_list_name": pick_list_name,
+            "job_id": str(job.id),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
+    )
+    db.commit()
+    response_payload = ProcessJobResponse(
+        job_id=str(job.id),
+        job_type=job.job_type,
+        status=job.status.value,
+        correlation_id=job.correlation_id,
+        result=job.result_meta,
+        error_message=job.error_message,
+        error_code=(job.result_meta or {}).get("error_code") if isinstance(job.result_meta, dict) else None,
+        retryable=(job.result_meta or {}).get("retryable") if isinstance(job.result_meta, dict) else None,
+    )
+    return store_json_idempotent_response(
+        db,
+        context,
+        method="POST",
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        payload=response_payload,
+        status_code=202,
+    )
+
+
+@router.get(
+    "/process/jobs/{job_id}",
+    response_model=ProcessJobResponse,
+)
+def get_process_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_PICKLISTS_WRITE)
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid process job id") from exc
+    job = (
+        db.query(ProcessJob)
+        .filter(
+            ProcessJob.id == job_uuid,
+            ProcessJob.tenant_id == context.tenant.id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Process job not found")
+    return ProcessJobResponse(
+        job_id=str(job.id),
+        job_type=job.job_type,
+        status=job.status.value,
+        correlation_id=job.correlation_id,
+        result=job.result_meta,
+        error_message=job.error_message,
+        error_code=(job.result_meta or {}).get("error_code") if isinstance(job.result_meta, dict) else None,
+        retryable=(job.result_meta or {}).get("retryable") if isinstance(job.result_meta, dict) else None,
+    )
 
 
 @router.get("/sales-orders")

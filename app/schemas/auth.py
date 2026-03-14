@@ -4,6 +4,14 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class ServerCapabilitiesResponse(BaseModel):
+    process_api_version: int = 1
+    supports_picklist_process: bool = True
+    supports_picklist_async_completion: bool = True
+    supports_delivery_note_creation: bool = True
+    supports_box_count_custom_fields: bool = True
+
+
 class ActivateRequest(BaseModel):
     license_key: str = Field(..., min_length=8, max_length=256)
     device_id: str = Field(..., min_length=1, max_length=128)
@@ -59,3 +67,4 @@ class CurrentUserResponse(BaseModel):
     enabled: bool = True
     erp_roles: list[str] = Field(default_factory=list)
     app_permissions: list[str] = Field(default_factory=list)
+    capabilities: ServerCapabilitiesResponse = Field(default_factory=ServerCapabilitiesResponse)

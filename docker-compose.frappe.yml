@@ -22,6 +22,7 @@ services:
       context: .
     container_name: license_api
     restart: unless-stopped
+    init: true
     env_file:
       - .env
     working_dir: /app
@@ -37,6 +38,7 @@ services:
 
       # Optional quality-of-life
       PYTHONUNBUFFERED: "1"
+      PROCESS_JOB_RUNNER_ENABLED: "false"
 
       # (Optional but recommended) also provide DB_* in case the app reads these
       DB_HOST: license_db
@@ -56,11 +58,65 @@ services:
     # Force correct process (avoid "python3" exit loop)
     entrypoint: []
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
     networks:
       frappe_network:
         aliases:
           - license-api
+      license_internal: {}
+
+  license_worker:
+    build:
+      context: .
+    container_name: license_worker
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
+      ALLOW_INSECURE_HTTP: "true"
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      PROCESS_JOB_RUNNER_ENABLED: "true"
+      DB_HOST: license_db
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-license_server}
+      DB_USER: ${POSTGRES_USER:-license_server}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    depends_on:
+      license_db:
+        condition: service_healthy
+    entrypoint: []
+    command: ["python", "-m", "app.worker"]
+    networks:
+      license_internal: {}
+
+  license_migrate:
+    build:
+      context: .
+    container_name: license_migrate
+    profiles: ["tools"]
+    env_file:
+      - .env
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      license_db:
+        condition: service_healthy
+    entrypoint: []
+    command: ["alembic", "upgrade", "head"]
+    networks:
       license_internal: {}
 
 networks:

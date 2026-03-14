@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.api.deps import (
+    RequestContext,
     get_client_ip,
     get_db,
     get_erp_request_context,
@@ -37,6 +38,7 @@ from app.schemas import (
     PairingActivateRequest,
     PairingRegisterRequest,
     PairingRegisterResponse,
+    ServerCapabilitiesResponse,
     TokenResponse,
 )
 from app.services.auth import create_access_token
@@ -52,6 +54,37 @@ router = APIRouter(tags=["auth"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
 PAIRING_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _tenant_disabled(company_code: str | None, disabled_list: list[str]) -> bool:
+    normalized = str(company_code or "").strip().lower()
+    return bool(normalized) and normalized in disabled_list
+
+
+def _build_server_capabilities(context: RequestContext | None = None) -> ServerCapabilitiesResponse:
+    company_code = context.tenant.company_code if context else None
+    supports_picklist_process = settings.process_api_enabled and not _tenant_disabled(
+        company_code, settings.process_api_disabled_tenants
+    )
+    supports_picklist_async_completion = (
+        supports_picklist_process
+        and settings.async_picklist_completion_enabled
+        and not _tenant_disabled(company_code, settings.async_picklist_completion_disabled_tenants)
+    )
+    supports_delivery_note_creation = (
+        supports_picklist_process
+        and settings.delivery_note_creation_enabled
+        and not _tenant_disabled(company_code, settings.delivery_note_creation_disabled_tenants)
+    )
+    supports_box_count_custom_fields = settings.box_count_custom_fields_enabled and not _tenant_disabled(
+        company_code, settings.box_count_custom_fields_disabled_tenants
+    )
+    return ServerCapabilitiesResponse(
+        supports_picklist_process=supports_picklist_process,
+        supports_picklist_async_completion=supports_picklist_async_completion,
+        supports_delivery_note_creation=supports_delivery_note_creation,
+        supports_box_count_custom_fields=supports_box_count_custom_fields,
+    )
 
 
 def _normalize_pairing_subdomain(value: str) -> str:
@@ -876,4 +909,5 @@ def me(context=Depends(get_erp_request_context), db: Session = Depends(get_db)) 
         enabled=resolved_enabled,
         erp_roles=list(context.erp_roles),
         app_permissions=sorted(context.app_permissions),
+        capabilities=_build_server_capabilities(context),
     )

@@ -22,6 +22,7 @@ from app.models import (
     LicenseKey,
     LicenseKeyStatus,
     OTAAccess,
+    ProcessJob,
     Tenant,
     TenantStatus,
 )
@@ -45,6 +46,16 @@ from app.services.erpnext import (
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.ota import OTAService
 from app.services.ota_binary import parse_esp_app_desc_version
+from app.services.process_jobs import (
+    cleanup_process_jobs,
+    create_process_job,
+    list_process_jobs,
+    normalize_process_job_query,
+    normalize_process_job_status,
+    parse_process_job_statuses,
+    requeue_process_job,
+)
+from app.services.process_job_runner import notify_process_job_runner
 from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.schemas.admin import LicenseDiagnosticsRequest
 from app.utils.time import utcnow
@@ -284,8 +295,6 @@ ACTION_LABELS = {
     "validate_license_failed": "Validate license",
     "license_diagnostics": "License diagnostics",
 }
-
-
 def parse_log_window_hours(value: str | None, default: int = 24) -> int:
     try:
         parsed = int(str(value or default).strip())
@@ -304,6 +313,9 @@ def normalize_log_scope(value: str | None) -> str:
 def normalize_log_outcome(value: str | None) -> str:
     normalized = str(value or "all").strip().lower()
     return normalized if normalized in LOG_OUTCOME_OPTIONS else "all"
+
+def parse_auto_refresh(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _event_result(action: str, meta: dict) -> str:
@@ -387,7 +399,6 @@ def fetch_license_event_logs(
             }
         )
     return rows
-
 
 @router.get("/")
 def index() -> RedirectResponse:
@@ -641,6 +652,186 @@ def list_licenses(request: Request, db: Session = Depends(get_db)):
         csrf_token=get_csrf_token(request),
     )
     return templates.TemplateResponse("licenses.html", context)
+
+
+@router.get("/process-jobs")
+def process_jobs_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    window_hours: str | None = None,
+    status: str | None = None,
+    company_code: str | None = None,
+    q: str | None = None,
+    auto_refresh: str | None = None,
+):
+    redirect = require_admin_or_redirect(request)
+    if redirect:
+        return redirect
+
+    selected_window_hours = parse_log_window_hours(window_hours, default=24)
+    selected_status = normalize_process_job_status(status)
+    selected_company_code = str(company_code or "").strip()
+    selected_query = normalize_process_job_query(q)
+    selected_auto_refresh = parse_auto_refresh(auto_refresh)
+    jobs, summary = list_process_jobs(
+        db,
+        window_hours=selected_window_hours,
+        status=selected_status,
+        company_code=selected_company_code or None,
+        search_query=selected_query or None,
+    )
+    message, error, _ = pop_flash(request)
+    context = build_admin_context(
+        request,
+        "Process Jobs",
+        "licensing",
+        "process-jobs",
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+        jobs=jobs,
+        summary=summary,
+        selected_window_hours=selected_window_hours,
+        selected_status=selected_status,
+        selected_company_code=selected_company_code,
+        selected_query=selected_query,
+        selected_auto_refresh=selected_auto_refresh,
+        default_retention_days=settings.process_job_retention_days,
+        default_cleanup_limit=settings.process_job_cleanup_delete_limit,
+        stale_after_minutes=settings.process_job_stale_after_minutes,
+    )
+    return templates.TemplateResponse("process_jobs.html", context)
+
+
+@router.post("/process-jobs/{job_id}/retry")
+async def retry_process_job(
+    request: Request,
+    job_id: str,
+    db: Session = Depends(get_db),
+):
+    redirect = require_admin_or_redirect(request)
+    if redirect:
+        return redirect
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/process-jobs")
+    if csrf_error:
+        return csrf_error
+
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError:
+        set_flash(request, error="Invalid process job id")
+        return redirect_to("/admin-ui/process-jobs")
+
+    job = db.query(ProcessJob).filter(ProcessJob.id == job_uuid).first()
+    if not job:
+        set_flash(request, error="Process job not found")
+        return redirect_to("/admin-ui/process-jobs")
+    if job.job_type != "picklist.complete":
+        set_flash(request, error="Retry is supported only for Pick List completion jobs")
+        return redirect_to("/admin-ui/process-jobs")
+
+    request_meta = job.request_meta if isinstance(job.request_meta, dict) else {}
+    new_job = create_process_job(
+        db,
+        tenant_id=job.tenant_id,
+        device_id=job.device_id,
+        job_type=job.job_type,
+        correlation_id=f"retry-{job.id}",
+        request_meta=request_meta,
+    )
+    notify_process_job_runner()
+    set_flash(request, message=f"Retry queued: {new_job.id}")
+    return redirect_to("/admin-ui/process-jobs")
+
+
+@router.post("/process-jobs/{job_id}/requeue")
+async def requeue_process_job_page(
+    request: Request,
+    job_id: str,
+    db: Session = Depends(get_db),
+):
+    redirect = require_admin_or_redirect(request)
+    if redirect:
+        return redirect
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/process-jobs")
+    if csrf_error:
+        return csrf_error
+
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError:
+        set_flash(request, error="Invalid process job id")
+        return redirect_to("/admin-ui/process-jobs")
+
+    try:
+        job = requeue_process_job(db, job_id=job_uuid)
+    except LookupError as exc:
+        set_flash(request, error=str(exc))
+        return redirect_to("/admin-ui/process-jobs")
+    except ValueError as exc:
+        set_flash(request, error=str(exc))
+        return redirect_to("/admin-ui/process-jobs")
+
+    notify_process_job_runner()
+    set_flash(request, message=f"Requeued stale job: {job.id}")
+    return redirect_to("/admin-ui/process-jobs")
+
+
+@router.post("/process-jobs/cleanup")
+async def cleanup_process_jobs_page(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    redirect = require_admin_or_redirect(request)
+    if redirect:
+        return redirect
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/process-jobs")
+    if csrf_error:
+        return csrf_error
+
+    retention_raw = str(form.get("retention_days") or "").strip()
+    limit_raw = str(form.get("limit") or "").strip()
+    statuses_raw = form.getlist("statuses")
+    dry_run = parse_bool_form(form.get("dry_run"))
+
+    try:
+        retention_days = int(retention_raw) if retention_raw else settings.process_job_retention_days
+        limit = int(limit_raw) if limit_raw else settings.process_job_cleanup_delete_limit
+    except ValueError:
+        set_flash(request, error="Cleanup settings must be integers")
+        return redirect_to("/admin-ui/process-jobs")
+
+    if retention_days < 1 or limit < 1:
+        set_flash(request, error="Cleanup settings must be positive")
+        return redirect_to("/admin-ui/process-jobs")
+
+    try:
+        statuses = parse_process_job_statuses(statuses_raw)
+        result = cleanup_process_jobs(
+            db,
+            retention_days=retention_days,
+            statuses=statuses,
+            limit=limit,
+            dry_run=dry_run,
+        )
+    except ValueError as exc:
+        set_flash(request, error=str(exc))
+        return redirect_to("/admin-ui/process-jobs")
+    action_label = "Dry run matched" if dry_run else "Deleted"
+    set_flash(
+        request,
+        message=(
+            f"{action_label} {result['matched_count']} process jobs older than "
+            f"{result['retention_days']} days."
+        ),
+    )
+    return redirect_to("/admin-ui/process-jobs")
 
 
 @router.post("/tenants/{company_code}/status")

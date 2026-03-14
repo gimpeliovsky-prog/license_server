@@ -1,0 +1,37 @@
+stages:
+  - pull_code
+  - deploy
+
+variables:
+  GIT_STRATEGY: none
+  LICENSE_SERVER_DIR: /opt/erp/license_server
+  COMPOSE_ARGS: -f docker-compose.frappe.yml
+  DB_SERVICE: license_db
+  API_SERVICE: license_api
+  WORKER_SERVICE: license_worker
+  MIGRATE_SERVICE: license_migrate
+  BACKUP_DIR: /opt/erp/license_server/backups
+  READINESS_PATH: /health/ready
+  READINESS_RETRIES: "20"
+  READINESS_DELAY_SECONDS: "3"
+
+pull_code:
+  stage: pull_code
+  tags:
+    - deploy_lic_server
+  script:
+    - echo "Updating repository..."
+    - cd "$LICENSE_SERVER_DIR"
+    - git fetch origin
+    - git reset --hard origin/main
+
+deploy_app:
+  stage: deploy
+  tags:
+    - deploy_lic_server
+  needs:
+    - job: pull_code
+  script:
+    - echo "Starting deploy..."
+    - cd "$LICENSE_SERVER_DIR"
+    - sh ./scripts/docker_deploy.sh

@@ -18,6 +18,11 @@ from app.schemas import (
     LicenseDiagnosticsTenantInfo,
     LicenseResponse,
     LicenseStatusUpdateRequest,
+    ProcessJobCleanupRequest,
+    ProcessJobCleanupResponse,
+    ProcessJobListItemResponse,
+    ProcessJobListResponse,
+    ProcessJobSummaryResponse,
     SubscriptionUpdateRequest,
     TenantCreateRequest,
     TenantResponse,
@@ -34,6 +39,16 @@ from app.services.license import (
     hash_license_key,
     verify_license_key_flexible,
 )
+from app.services.process_jobs import (
+    build_process_job_summary,
+    cleanup_process_jobs,
+    list_process_jobs,
+    normalize_process_job_status,
+    parse_process_job_statuses,
+    requeue_process_job,
+    serialize_process_job,
+)
+from app.services.process_job_runner import notify_process_job_runner
 from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.utils.time import utcnow
 
@@ -151,6 +166,91 @@ def _serialize_diagnostic_license(entry: LicenseKey | None) -> LicenseDiagnostic
 def list_tenants(db: Session = Depends(get_db)) -> list[TenantResponse]:
     tenants = db.query(Tenant).order_by(Tenant.company_code.asc()).all()
     return [serialize_tenant(tenant) for tenant in tenants]
+
+
+@router.get("/process-jobs", response_model=ProcessJobListResponse)
+def list_process_jobs_admin(
+    window_hours: int = 24,
+    status: str = "all",
+    company_code: str | None = None,
+    q: str | None = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+) -> ProcessJobListResponse:
+    normalized_status = normalize_process_job_status(status)
+    jobs, summary = list_process_jobs(
+        db,
+        window_hours=window_hours,
+        status=normalized_status,
+        company_code=company_code,
+        search_query=q,
+        limit=limit,
+    )
+    return ProcessJobListResponse(
+        summary=ProcessJobSummaryResponse(**summary),
+        jobs=[ProcessJobListItemResponse(**row) for row in jobs],
+        window_hours=max(1, window_hours),
+        status=normalized_status,
+        company_code=(company_code or "").strip() or None,
+        q=(q or "").strip() or None,
+        limit=max(1, min(limit, 1000)),
+    )
+
+
+@router.get("/process-jobs/summary", response_model=ProcessJobSummaryResponse)
+def get_process_jobs_summary_admin(
+    window_hours: int = 24,
+    status: str = "all",
+    company_code: str | None = None,
+    db: Session = Depends(get_db),
+) -> ProcessJobSummaryResponse:
+    normalized_status = normalize_process_job_status(status)
+    summary = build_process_job_summary(
+        db,
+        window_hours=window_hours,
+        status=normalized_status,
+        company_code=company_code,
+    )
+    return ProcessJobSummaryResponse(**summary)
+
+
+@router.post("/process-jobs/cleanup", response_model=ProcessJobCleanupResponse)
+def cleanup_process_jobs_admin(
+    payload: ProcessJobCleanupRequest,
+    db: Session = Depends(get_db),
+) -> ProcessJobCleanupResponse:
+    try:
+        statuses = parse_process_job_statuses(payload.statuses)
+        result = cleanup_process_jobs(
+            db,
+            retention_days=payload.retention_days,
+            statuses=statuses,
+            limit=payload.limit,
+            dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProcessJobCleanupResponse(**result)
+
+
+@router.post("/process-jobs/{job_id}/requeue", response_model=ProcessJobListItemResponse)
+def requeue_process_job_admin(job_id: str, db: Session = Depends(get_db)) -> ProcessJobListItemResponse:
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid process job id") from exc
+
+    try:
+        job = requeue_process_job(db, job_id=job_uuid)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    notify_process_job_runner()
+    tenant = db.query(Tenant.company_code).filter(Tenant.id == job.tenant_id).first()
+    tenant_company_code = tenant[0] if tenant else "-"
+    return ProcessJobListItemResponse(**serialize_process_job(job, tenant_company_code=tenant_company_code))
 
 
 @router.get("/tenants/{company_code}", response_model=TenantResponse)

@@ -22,7 +22,25 @@ from app.schemas.auth import (
     PairingActivateRequest,
     PairingRegisterRequest,
     PairingRegisterResponse,
+    ServerCapabilitiesResponse,
     TokenResponse,
+)
+from app.schemas.picklist_process import (
+    PickListCompleteRequest,
+    PickListCompleteResponse,
+    ProcessJobResponse,
+    PickListFromSalesOrderCreateRequest,
+    PickListFromSalesOrderCreateResponse,
+    PickListFromSalesOrderPreviewResponse,
+    PickListFromSalesOrderRequest,
+    PickListFromSalesOrderShortageResponse,
+)
+from app.schemas.process_jobs import (
+    ProcessJobCleanupRequest,
+    ProcessJobCleanupResponse,
+    ProcessJobListItemResponse,
+    ProcessJobListResponse,
+    ProcessJobSummaryResponse,
 )
 from app.schemas.status import StatusResponse
 
@@ -34,6 +52,7 @@ __all__ = [
     "PairingActivateRequest",
     "PairingRegisterRequest",
     "PairingRegisterResponse",
+    "ServerCapabilitiesResponse",
     "TokenResponse",
     "StatusResponse",
     "TenantCreateRequest",
@@ -50,4 +69,17 @@ __all__ = [
     "LicenseDiagnosticsTenantInfo",
     "LicenseDiagnosticsLicenseInfo",
     "LicenseDiagnosticsResponse",
+    "PickListFromSalesOrderRequest",
+    "PickListFromSalesOrderCreateRequest",
+    "PickListFromSalesOrderShortageResponse",
+    "PickListFromSalesOrderPreviewResponse",
+    "PickListFromSalesOrderCreateResponse",
+    "PickListCompleteRequest",
+    "PickListCompleteResponse",
+    "ProcessJobResponse",
+    "ProcessJobCleanupRequest",
+    "ProcessJobCleanupResponse",
+    "ProcessJobListItemResponse",
+    "ProcessJobListResponse",
+    "ProcessJobSummaryResponse",
 ]

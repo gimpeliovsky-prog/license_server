@@ -64,6 +64,27 @@ class Settings(BaseSettings):
     admin_session_same_site: str = Field(default="lax", alias="ADMIN_SESSION_SAMESITE")
     ota_download_secret: str | None = Field(default=None, alias="OTA_DOWNLOAD_SECRET")
     ota_download_ttl_seconds: int = Field(default=10 * 60, alias="OTA_DOWNLOAD_TTL_SECONDS")
+    process_api_enabled: bool = Field(default=True, alias="PROCESS_API_ENABLED")
+    async_picklist_completion_enabled: bool = Field(default=True, alias="ASYNC_PICKLIST_COMPLETION_ENABLED")
+    delivery_note_creation_enabled: bool = Field(default=True, alias="DELIVERY_NOTE_CREATION_ENABLED")
+    box_count_custom_fields_enabled: bool = Field(default=True, alias="BOX_COUNT_CUSTOM_FIELDS_ENABLED")
+    process_api_disabled_tenants: list[str] = Field(default_factory=list, alias="PROCESS_API_DISABLED_TENANTS")
+    async_picklist_completion_disabled_tenants: list[str] = Field(
+        default_factory=list, alias="ASYNC_PICKLIST_COMPLETION_DISABLED_TENANTS"
+    )
+    delivery_note_creation_disabled_tenants: list[str] = Field(
+        default_factory=list, alias="DELIVERY_NOTE_CREATION_DISABLED_TENANTS"
+    )
+    box_count_custom_fields_disabled_tenants: list[str] = Field(
+        default_factory=list, alias="BOX_COUNT_CUSTOM_FIELDS_DISABLED_TENANTS"
+    )
+    process_job_runner_enabled: bool = Field(default=True, alias="PROCESS_JOB_RUNNER_ENABLED")
+    process_job_runner_poll_seconds: int = Field(default=5, alias="PROCESS_JOB_RUNNER_POLL_SECONDS")
+    process_job_stale_after_minutes: int = Field(default=5, alias="PROCESS_JOB_STALE_AFTER_MINUTES")
+    process_job_retention_days: int = Field(default=30, alias="PROCESS_JOB_RETENTION_DAYS")
+    process_job_cleanup_delete_limit: int = Field(default=1000, alias="PROCESS_JOB_CLEANUP_DELETE_LIMIT")
+    process_job_failed_alert_threshold: int = Field(default=1, alias="PROCESS_JOB_FAILED_ALERT_THRESHOLD")
+    process_job_stale_alert_threshold: int = Field(default=1, alias="PROCESS_JOB_STALE_ALERT_THRESHOLD")
     erp_allowed_doctypes: list[str] = Field(
         default_factory=lambda: [
             "Pick List",
@@ -93,6 +114,17 @@ class Settings(BaseSettings):
     @classmethod
     def parse_erp_allowed_doctypes(cls, value: object) -> list[str]:
         return _parse_csv_list(value)
+
+    @field_validator(
+        "process_api_disabled_tenants",
+        "async_picklist_completion_disabled_tenants",
+        "delivery_note_creation_disabled_tenants",
+        "box_count_custom_fields_disabled_tenants",
+        mode="before",
+    )
+    @classmethod
+    def parse_tenant_lists(cls, value: object) -> list[str]:
+        return [item.lower() for item in _parse_csv_list(value)]
 
     @field_validator("erp_allowed_methods", mode="before")
     @classmethod

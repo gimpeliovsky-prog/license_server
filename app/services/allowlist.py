@@ -7,6 +7,7 @@ from app.models import ERPAllowlistEntry, ERPAllowlistType
 
 MOBILE_APP_DOCTYPES: tuple[str, ...] = (
     "Pick List",
+    "Delivery Note",
     "Sales Order",
     "Purchase Order",
     "Item",

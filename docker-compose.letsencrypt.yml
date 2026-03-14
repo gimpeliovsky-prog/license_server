@@ -4,7 +4,9 @@ services:
   nginx:
     image: nginx:1.25-alpine
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -17,6 +19,7 @@ services:
 
   certbot:
     image: certbot/certbot:latest
+    restart: unless-stopped
     volumes:
       - ./nginx/letsencrypt:/etc/letsencrypt
       - ./nginx/www:/var/www/certbot

@@ -1,0 +1,507 @@
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote
+
+from app.models import Tenant
+from app.services.erpnext import ERPNextError, request_erpnext
+
+
+CREATE_PICK_LIST_METHOD_PATH = "/api/method/erpnext.selling.doctype.sales_order.sales_order.create_pick_list"
+CREATE_DELIVERY_NOTE_METHOD_PATH = "/api/method/erpnext.stock.doctype.pick_list.pick_list.create_delivery_note"
+ERP_INSERT_STRIP_FIELDS = {
+    "name",
+    "owner",
+    "creation",
+    "modified",
+    "modified_by",
+    "parent",
+    "parentfield",
+    "parenttype",
+    "idx",
+    "docstatus",
+    "__islocal",
+    "__unsaved",
+    "__onload",
+    "__last_sync_on",
+    "_assign",
+    "_comments",
+    "_liked_by",
+    "_user_tags",
+}
+
+
+class PickListProcessError(ERPNextError):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        *,
+        reason_code: str = "erp_request_failed",
+        retryable: bool = False,
+        erp_refused: bool = True,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.reason_code = reason_code
+        self.retryable = retryable
+        self.erp_refused = erp_refused
+
+    def to_detail(self) -> dict[str, object]:
+        return {
+            "message": str(self),
+            "reason_code": self.reason_code,
+            "retryable": self.retryable,
+            "erp_refused": self.erp_refused,
+        }
+
+
+@dataclass(frozen=True)
+class PickListShortage:
+    item_code: str
+    item_name: str
+    requested_qty: float
+    allocated_qty: float
+    shortage_qty: float
+
+
+@dataclass(frozen=True)
+class PickListPreview:
+    sales_order_name: str
+    draft_doc: dict[str, Any]
+    shortages: list[PickListShortage]
+    allocated_line_count: int
+
+
+def preview_pick_list_from_sales_order(tenant: Tenant, sales_order_name: str) -> PickListPreview:
+    normalized_name = sales_order_name.strip()
+    if not normalized_name:
+        raise PickListProcessError("Sales Order is required", status_code=400, reason_code="sales_order_required")
+    sales_order_doc = fetch_sales_order_details(tenant, normalized_name)
+    draft_doc = request_pick_list_draft(tenant, normalized_name)
+    return build_pick_list_preview(sales_order_doc, draft_doc, normalized_name)
+
+
+def create_pick_list_from_preview(tenant: Tenant, preview: PickListPreview) -> str:
+    payload = sanitize_for_insert(preview.draft_doc)
+    if not isinstance(payload, dict) or not payload:
+        raise PickListProcessError(
+            "ERPNext returned an empty Pick List draft",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "POST",
+        "/api/resource/Pick List",
+        json_body=payload,
+    )
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, "Failed to create Pick List from Sales Order"),
+            response.status_code,
+        )
+
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            "ERPNext returned invalid Pick List create response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    pick_list_name = _as_string(data.get("name"))
+    if not pick_list_name:
+        raise PickListProcessError(
+            "ERPNext did not return Pick List name",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    return pick_list_name
+
+
+def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> str:
+    draft_doc = request_delivery_note_draft(tenant, pick_list_name)
+    payload = sanitize_for_insert(draft_doc)
+    if not isinstance(payload, dict) or not payload:
+        raise PickListProcessError(
+            "ERPNext returned an empty Delivery Note draft",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "POST",
+        "/api/resource/Delivery Note",
+        json_body=payload,
+    )
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, "Failed to create Delivery Note from Pick List"),
+            response.status_code,
+        )
+
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            "ERPNext returned invalid Delivery Note create response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    delivery_note_name = _as_string(data.get("name"))
+    if not delivery_note_name:
+        raise PickListProcessError(
+            "ERPNext did not return Delivery Note name",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    return delivery_note_name
+
+
+def fetch_sales_order_details(tenant: Tenant, sales_order_name: str) -> dict[str, Any]:
+    safe_name = quote(sales_order_name, safe="")
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "GET",
+        f"/api/resource/Sales Order/{safe_name}",
+    )
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, "Failed to load Sales Order details"),
+            response.status_code,
+        )
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            "ERPNext returned invalid Sales Order response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    return data
+
+
+def request_pick_list_draft(tenant: Tenant, sales_order_name: str) -> dict[str, Any]:
+    post_response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "POST",
+        CREATE_PICK_LIST_METHOD_PATH,
+        json_body={"source_name": sales_order_name},
+    )
+    response = post_response
+    if post_response.status_code in {404, 405}:
+        response = request_erpnext(
+            tenant.erpnext_url,
+            tenant.api_key,
+            tenant.api_secret,
+            "GET",
+            CREATE_PICK_LIST_METHOD_PATH,
+            params={"source_name": sales_order_name},
+        )
+
+    if response.status_code >= 400:
+        detail = extract_response_detail(response, "Failed to generate Pick List from Sales Order")
+        normalized = detail.lower()
+        unsupported = (
+            "allowlist" in normalized
+            or "not whitelisted" in normalized
+            or "not permitted" in normalized
+            or "permissionerror" in normalized
+            or ("method" in normalized and "not found" in normalized)
+            or "has no attribute" in normalized
+            or "does not exist" in normalized
+        )
+        if unsupported:
+            raise PickListProcessError(
+                "ERPNext cannot create a Pick List from Sales Order. Check method allowlist and user permissions.",
+                status_code=501,
+                reason_code="unsupported_configuration",
+            )
+        raise build_picklist_process_error(detail, response.status_code)
+
+    payload = response.json()
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if isinstance(message, dict):
+        return message
+    if isinstance(message, str):
+        parsed = _try_parse_json_object(message)
+        if parsed is not None:
+            return parsed
+    raise PickListProcessError(
+        "ERPNext did not return a Pick List draft",
+        status_code=502,
+        reason_code="invalid_erp_response",
+        retryable=True,
+        erp_refused=False,
+    )
+
+
+def request_delivery_note_draft(tenant: Tenant, pick_list_name: str) -> dict[str, Any]:
+    post_response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "POST",
+        CREATE_DELIVERY_NOTE_METHOD_PATH,
+        json_body={"source_name": pick_list_name},
+    )
+    response = post_response
+    if post_response.status_code in {404, 405}:
+        response = request_erpnext(
+            tenant.erpnext_url,
+            tenant.api_key,
+            tenant.api_secret,
+            "GET",
+            CREATE_DELIVERY_NOTE_METHOD_PATH,
+            params={"source_name": pick_list_name},
+        )
+
+    if response.status_code >= 400:
+        detail = extract_response_detail(response, "Failed to generate Delivery Note from Pick List")
+        normalized = detail.lower()
+        unsupported = (
+            "allowlist" in normalized
+            or "not whitelisted" in normalized
+            or "not permitted" in normalized
+            or "permissionerror" in normalized
+            or ("method" in normalized and "not found" in normalized)
+            or "has no attribute" in normalized
+            or "does not exist" in normalized
+        )
+        if unsupported:
+            raise PickListProcessError(
+                "ERPNext cannot create a Delivery Note from Pick List. Check method allowlist and user permissions.",
+                status_code=501,
+                reason_code="unsupported_configuration",
+            )
+        raise build_picklist_process_error(detail, response.status_code)
+
+    payload = response.json()
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if isinstance(message, dict):
+        return message
+    if isinstance(message, str):
+        parsed = _try_parse_json_object(message)
+        if parsed is not None:
+            return parsed
+    raise PickListProcessError(
+        "ERPNext did not return a Delivery Note draft",
+        status_code=502,
+        reason_code="invalid_erp_response",
+        retryable=True,
+        erp_refused=False,
+    )
+
+
+def build_pick_list_preview(
+    sales_order_doc: dict[str, Any],
+    draft_doc: dict[str, Any],
+    sales_order_name: str,
+) -> PickListPreview:
+    allocated_qty_by_source: dict[str, float] = {}
+    allocated_qty_by_item_code: dict[str, float] = {}
+    allocated_line_count = 0
+
+    locations = draft_doc.get("locations")
+    if isinstance(locations, list):
+        for entry in locations:
+            if not isinstance(entry, dict):
+                continue
+            source_key = _as_string(entry.get("sales_order_item")) or _as_string(entry.get("product_bundle_item"))
+            item_code = _as_string(entry.get("item_code")) or ""
+            qty = _as_float(entry.get("qty"))
+            if qty > 0:
+                allocated_line_count += 1
+            if source_key:
+                allocated_qty_by_source[source_key] = allocated_qty_by_source.get(source_key, 0.0) + qty
+            elif item_code:
+                allocated_qty_by_item_code[item_code] = allocated_qty_by_item_code.get(item_code, 0.0) + qty
+
+    item_fallback_consumption: dict[str, float] = {}
+    shortages: list[PickListShortage] = []
+    for line in sales_order_doc.get("items") or []:
+        if not isinstance(line, dict):
+            continue
+        item_code = _as_string(line.get("item_code")) or ""
+        if not item_code:
+            continue
+        if _as_int(line.get("delivered_by_supplier")) == 1:
+            continue
+
+        conversion_factor = _as_float(line.get("conversion_factor")) or 1.0
+        if conversion_factor <= 0:
+            conversion_factor = 1.0
+        already_picked = _as_float(line.get("picked_qty")) / conversion_factor
+        pending_qty = max(
+            0.0,
+            _as_float(line.get("qty")) - max(already_picked, _as_float(line.get("delivered_qty"))),
+        )
+        if pending_qty <= 0:
+            continue
+
+        line_name = _as_string(line.get("name"))
+        if line_name:
+            allocated_qty = allocated_qty_by_source.get(line_name, 0.0)
+        else:
+            total_for_item = allocated_qty_by_item_code.get(item_code, 0.0)
+            used = item_fallback_consumption.get(item_code, 0.0)
+            remaining = max(0.0, total_for_item - used)
+            allocated_qty = min(remaining, pending_qty)
+            item_fallback_consumption[item_code] = used + allocated_qty
+
+        if allocated_qty + 1e-6 < pending_qty:
+            shortages.append(
+                PickListShortage(
+                    item_code=item_code,
+                    item_name=_as_string(line.get("item_name")) or item_code,
+                    requested_qty=pending_qty,
+                    allocated_qty=allocated_qty,
+                    shortage_qty=max(0.0, pending_qty - allocated_qty),
+                )
+            )
+
+    return PickListPreview(
+        sales_order_name=sales_order_name,
+        draft_doc=draft_doc,
+        shortages=shortages,
+        allocated_line_count=allocated_line_count,
+    )
+
+
+def sanitize_for_insert(value: Any) -> Any:
+    if isinstance(value, list):
+        return [sanitize_for_insert(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    clean: dict[str, Any] = {}
+    for key, child in value.items():
+        if key in ERP_INSERT_STRIP_FIELDS:
+            continue
+        clean[key] = sanitize_for_insert(child)
+    return clean
+
+
+def extract_response_detail(response: Any, fallback: str) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        if isinstance(detail, list) and detail:
+            first = detail[0]
+            if isinstance(first, dict):
+                message = first.get("msg") or first.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        exception = payload.get("exception")
+        if isinstance(exception, str) and exception.strip():
+            return exception.strip()
+    text = getattr(response, "text", "") or ""
+    text = text.strip()
+    if text:
+        return text
+    status_code = getattr(response, "status_code", None)
+    if status_code:
+        return f"{fallback} [{status_code}]"
+    return fallback
+
+
+def map_erp_status(status_code: int) -> int:
+    if status_code >= 500:
+        return 502
+    return status_code
+
+
+def build_picklist_process_error(detail: str, status_code: int) -> PickListProcessError:
+    reason_code, retryable, erp_refused = classify_erp_failure(detail, status_code)
+    return PickListProcessError(
+        detail,
+        status_code=map_erp_status(status_code),
+        reason_code=reason_code,
+        retryable=retryable,
+        erp_refused=erp_refused,
+    )
+
+
+def classify_erp_failure(detail: str, status_code: int) -> tuple[str, bool, bool]:
+    normalized = detail.strip().lower()
+    if status_code >= 500:
+        return "erp_unavailable", True, False
+    if any(token in normalized for token in ("insufficient stock", "not enough stock", "out of stock", "shortage")):
+        return "stock_shortage", False, True
+    if any(token in normalized for token in ("mandatory", "reqd", "required field", "missing value")):
+        return "missing_required_fields", False, True
+    if any(token in normalized for token in ("permissionerror", "not permitted", "no permission", "forbidden")):
+        return "permission_denied", False, True
+    if any(token in normalized for token in ("validationerror", "invalid", "cannot create", "must be", "should be")):
+        return "erp_validation_failed", False, True
+    if status_code in {400, 409, 422}:
+        return "erp_refused", False, True
+    return "erp_request_failed", status_code >= 500, status_code < 500
+
+
+def _try_parse_json_object(value: str) -> dict[str, Any] | None:
+    import json
+
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _as_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _as_float(value: Any) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return 0.0
+        try:
+            return float(normalized)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _as_int(value: Any) -> int:
+    return int(_as_float(value))
