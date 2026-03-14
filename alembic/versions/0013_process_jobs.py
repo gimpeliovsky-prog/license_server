@@ -16,7 +16,14 @@ branch_labels = None
 depends_on = None
 
 
-process_job_status = sa.Enum("pending", "running", "succeeded", "failed", name="processjobstatus")
+process_job_status = postgresql.ENUM(
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    name="processjobstatus",
+    create_type=False,
+)
 
 
 def upgrade() -> None:
