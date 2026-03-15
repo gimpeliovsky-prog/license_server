@@ -253,11 +253,8 @@ async def create_firmware(
         .first()
     )
 
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Firmware version already exists",
-        )
+    safe_device_type = firmware_create.device_type.replace("/", "_").replace("\\", "_")
+    canonical_filename = f"{safe_device_type}-v{version}-b{build_number}.bin"
 
     # Verify file hash
     calculated_hash = ota_service.calculate_file_hash(binary_path)
@@ -267,11 +264,29 @@ async def create_firmware(
             detail="File hash mismatch",
         )
 
+    if existing:
+        existing.filename = canonical_filename
+        existing.file_size = firmware_create.file_size
+        existing.file_hash = firmware_create.file_hash
+        existing.binary_path = firmware_create.binary_path
+        existing.description = firmware_create.description
+        existing.release_notes = firmware_create.release_notes
+        existing.is_stable = firmware_create.is_stable
+        existing.min_current_version = firmware_create.min_current_version
+        existing.is_active = True
+        db.commit()
+        db.refresh(existing)
+        logger.info(
+            f"Replaced firmware {existing.device_type} v{existing.version} "
+            f"(build {existing.build_number})"
+        )
+        return FirmwareDetailResponse.from_orm(existing)
+
     firmware = Firmware(
         device_type=firmware_create.device_type,
         version=version,
         build_number=build_number,
-        filename=firmware_create.filename,
+        filename=canonical_filename,
         file_size=firmware_create.file_size,
         file_hash=firmware_create.file_hash,
         binary_path=firmware_create.binary_path,

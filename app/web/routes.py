@@ -1233,12 +1233,13 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
         return redirect_to("/admin-ui/ota/releases")
 
     raw_filename = getattr(upload, "filename", None) or f"{device_type}-v{version}-b{build_number}.bin"
-    filename = str(raw_filename).split("/")[-1].split("\\")[-1]
+    original_filename = str(raw_filename).split("/")[-1].split("\\")[-1]
     safe_device_type = "".join(ch for ch in device_type if ch.isalnum() or ch in ("-", "_")).strip()
     if not safe_device_type:
         set_flash(request, error="Device type contains invalid characters")
         return redirect_to("/admin-ui/ota/releases")
 
+    filename = f"{safe_device_type}-v{version}-b{build_number}.bin"
     existing = (
         db.query(Firmware)
         .filter(
@@ -1248,9 +1249,6 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
         )
         .first()
     )
-    if existing:
-        set_flash(request, error="Firmware with same device type, version, and build already exists")
-        return redirect_to("/admin-ui/ota/releases")
 
     binary_path = f"{safe_device_type}/v{version}_b{build_number}.bin"
     file_path = ota_service.firmware_path / binary_path
@@ -1259,6 +1257,29 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
     file_path.write_bytes(file_bytes)
     file_hash = ota_service.calculate_file_hash(file_path)
     file_size = file_path.stat().st_size
+
+    if existing:
+        existing.filename = filename
+        existing.file_size = file_size
+        existing.file_hash = file_hash
+        existing.binary_path = binary_path
+        existing.description = description
+        existing.release_notes = release_notes
+        existing.is_stable = is_stable
+        existing.min_current_version = min_current_version
+        existing.is_active = True
+        if is_stable and existing.released_at is None:
+            existing.released_at = utcnow()
+        if not is_stable:
+            existing.released_at = None
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            set_flash(request, error=f"Firmware upload conflicted with an existing file name. Original upload name: {original_filename}")
+            return redirect_to("/admin-ui/ota/releases")
+        set_flash(request, message="Firmware release updated: binary and metadata were replaced")
+        return redirect_to("/admin-ui/ota/releases")
 
     firmware = Firmware(
         device_type=device_type,
@@ -1276,8 +1297,13 @@ async def create_ota_release(request: Request, db: Session = Depends(get_db)):
         released_at=utcnow() if is_stable else None,
     )
     db.add(firmware)
-    db.commit()
-    set_flash(request, message="Firmware uploaded and registered")
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        set_flash(request, error=f"Firmware upload conflicted with an existing file name. Original upload name: {original_filename}")
+        return redirect_to("/admin-ui/ota/releases")
+    set_flash(request, message="Firmware uploaded and registered as a new release")
     return redirect_to("/admin-ui/ota/releases")
 
 

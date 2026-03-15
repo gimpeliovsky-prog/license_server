@@ -27,6 +27,7 @@ from app.services.picklist_process import (
     PickListProcessError,
     create_delivery_note_from_pick_list,
     create_pick_list_from_preview,
+    ensure_document_submitted,
     preview_pick_list_from_sales_order,
 )
 from app.services.process_jobs import (
@@ -1012,6 +1013,10 @@ def create_sales_order(
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    response_content = response.content
+    response_status = response.status_code
+    response_content_type = response.headers.get("content-type")
+
     if idempotency_key and request_hash:
         concurrent_replay = store_response(
             db,
@@ -1020,9 +1025,9 @@ def create_sales_order(
             endpoint,
             idempotency_key,
             request_hash,
-            response.status_code,
-            response.headers.get("content-type"),
-            response.content,
+            response_status,
+            response_content_type,
+            response_content,
         )
         if concurrent_replay:
             return build_proxy_response(
@@ -1032,7 +1037,7 @@ def create_sales_order(
                 replayed=True,
             )
 
-    return build_proxy_response(response.content, response.status_code, response.headers.get("content-type"))
+    return build_proxy_response(response_content, response_status, response_content_type)
 
 
 @router.put("/sales-orders/{name}")
@@ -1070,6 +1075,10 @@ def update_sales_order(
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    response_content = response.content
+    response_status = response.status_code
+    response_content_type = response.headers.get("content-type")
+
     if idempotency_key and request_hash:
         concurrent_replay = store_response(
             db,
@@ -1078,9 +1087,9 @@ def update_sales_order(
             endpoint,
             idempotency_key,
             request_hash,
-            response.status_code,
-            response.headers.get("content-type"),
-            response.content,
+            response_status,
+            response_content_type,
+            response_content,
         )
         if concurrent_replay:
             return build_proxy_response(
@@ -1090,7 +1099,25 @@ def update_sales_order(
                 replayed=True,
             )
 
-    return build_proxy_response(response.content, response.status_code, response.headers.get("content-type"))
+    return build_proxy_response(response_content, response_status, response_content_type)
+
+
+@router.post("/sales-orders/{name}/submit")
+def submit_sales_order(
+    name: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_SALES_ORDERS_WRITE)
+    ensure_method_allowed("POST", allowlist)
+    get_allowed_doctype("Sales Order", allowlist)
+
+    try:
+        submitted = ensure_document_submitted(context.tenant, "Sales Order", name)
+    except PickListProcessError as exc:
+        raise_process_http_error(exc)
+
+    return JSONResponse(content={"data": submitted}, status_code=200)
 
 
 @router.get("/stock-settings")

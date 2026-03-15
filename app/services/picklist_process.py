@@ -8,6 +8,7 @@ from app.services.erpnext import ERPNextError, request_erpnext
 
 CREATE_PICK_LIST_METHOD_PATH = "/api/method/erpnext.selling.doctype.sales_order.sales_order.create_pick_list"
 CREATE_DELIVERY_NOTE_METHOD_PATH = "/api/method/erpnext.stock.doctype.pick_list.pick_list.create_delivery_note"
+SUBMIT_DOCUMENT_METHOD_PATH = "/api/method/frappe.client.submit"
 ERP_INSERT_STRIP_FIELDS = {
     "name",
     "owner",
@@ -77,6 +78,14 @@ def preview_pick_list_from_sales_order(tenant: Tenant, sales_order_name: str) ->
     if not normalized_name:
         raise PickListProcessError("Sales Order is required", status_code=400, reason_code="sales_order_required")
     sales_order_doc = fetch_sales_order_details(tenant, normalized_name)
+    if _as_int(sales_order_doc.get("docstatus")) != 1:
+        raise PickListProcessError(
+            "Sales Order must be submitted in ERPNext before Pick List creation.",
+            status_code=409,
+            reason_code="source_not_submitted",
+            retryable=False,
+            erp_refused=True,
+        )
     draft_doc = request_pick_list_draft(tenant, normalized_name)
     return build_pick_list_preview(sales_order_doc, draft_doc, normalized_name)
 
@@ -129,6 +138,7 @@ def create_pick_list_from_preview(tenant: Tenant, preview: PickListPreview) -> s
 
 
 def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> str:
+    ensure_document_submitted(tenant, "Pick List", pick_list_name)
     draft_doc = request_delivery_note_draft(tenant, pick_list_name)
     payload = sanitize_for_insert(draft_doc)
     if not isinstance(payload, dict) or not payload:
@@ -174,6 +184,55 @@ def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> 
             erp_refused=False,
         )
     return delivery_note_name
+
+
+def ensure_document_submitted(tenant: Tenant, doctype: str, docname: str) -> dict[str, Any]:
+    document = fetch_document(tenant, doctype, docname)
+    if _as_int(document.get("docstatus")) == 1:
+        return document
+
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "POST",
+        SUBMIT_DOCUMENT_METHOD_PATH,
+        json_body={"doc": document},
+    )
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, f"Failed to submit {doctype}"),
+            response.status_code,
+        )
+    return fetch_document(tenant, doctype, docname)
+
+
+def fetch_document(tenant: Tenant, doctype: str, docname: str) -> dict[str, Any]:
+    safe_doctype = quote(doctype, safe="")
+    safe_name = quote(docname, safe="")
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "GET",
+        f"/api/resource/{safe_doctype}/{safe_name}",
+    )
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, f"Failed to load {doctype}"),
+            response.status_code,
+        )
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            f"ERPNext returned invalid {doctype} response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    return data
 
 
 def fetch_sales_order_details(tenant: Tenant, sales_order_name: str) -> dict[str, Any]:
