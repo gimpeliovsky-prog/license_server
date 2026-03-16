@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import ProcessJob, ProcessJobStatus, Tenant
-from app.services.picklist_process import PickListProcessError, create_delivery_note_from_pick_list
+from app.services.picklist_process import (
+    PickListProcessError,
+    create_delivery_note_from_pick_list,
+    ensure_document_submitted,
+)
 from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -323,6 +327,7 @@ def run_picklist_complete_job(job_id: uuid.UUID) -> None:
             raise PickListProcessError("Pick List is required", status_code=400)
 
         create_delivery_note = bool(request_meta.get("create_delivery_note", True))
+        ensure_document_submitted(tenant, "Pick List", pick_list_name)
         delivery_note_name = None
         if create_delivery_note:
             delivery_note_name = create_delivery_note_from_pick_list(tenant, pick_list_name)

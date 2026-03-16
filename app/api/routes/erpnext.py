@@ -718,7 +718,8 @@ def complete_picklist_process(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_PICKLISTS_WRITE)
-    ensure_delivery_note_process_supported(allowlist)
+    if payload.create_delivery_note:
+        ensure_delivery_note_process_supported(allowlist)
     idempotency_key = extract_idempotency_key(request)
     endpoint = f"/process/picklists/{pick_list_name}/complete"
     request_payload = payload.model_dump(mode="json")
@@ -728,6 +729,7 @@ def complete_picklist_process(
         if replay:
             return build_json_replay_response(replay)
     try:
+        ensure_document_submitted(context.tenant, "Pick List", pick_list_name)
         delivery_note_name = None
         if payload.create_delivery_note:
             delivery_note_name = create_delivery_note_from_pick_list(context.tenant, pick_list_name)
@@ -806,7 +808,8 @@ def complete_picklist_process_async(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_PICKLISTS_WRITE)
-    ensure_delivery_note_process_supported(allowlist)
+    if payload.create_delivery_note:
+        ensure_delivery_note_process_supported(allowlist)
     idempotency_key = extract_idempotency_key(request)
     endpoint = f"/process/picklists/{pick_list_name}/complete-async"
     request_payload = {"pick_list_name": pick_list_name, **payload.model_dump(mode="json")}
