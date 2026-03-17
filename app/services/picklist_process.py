@@ -465,26 +465,57 @@ def sanitize_for_insert(value: Any) -> Any:
 
 
 def extract_response_detail(response: Any, fallback: str) -> str:
+    def extract_text(value: Any) -> str | None:
+        import json
+
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.startswith("{") or text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except ValueError:
+                    return text
+                nested = extract_text(parsed)
+                return nested or text
+            return text
+        if isinstance(value, list):
+            parts = [extract_text(item) for item in value]
+            combined = "; ".join(part for part in parts if part)
+            return combined or None
+        if isinstance(value, dict):
+            for key in ("message", "msg", "title", "detail", "exception", "exc", "_server_messages"):
+                nested = extract_text(value.get(key))
+                if nested:
+                    return nested
+            parts: list[str] = []
+            for key, item in value.items():
+                if str(key).startswith("_"):
+                    continue
+                nested = extract_text(item)
+                if nested:
+                    parts.append(f"{key}: {nested}")
+                if len(parts) >= 4:
+                    break
+            combined = "; ".join(parts)
+            return combined or None
+        return str(value).strip() or None
+
     try:
         payload = response.json()
     except ValueError:
         payload = None
     if isinstance(payload, dict):
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
-        if isinstance(detail, list) and detail:
-            first = detail[0]
-            if isinstance(first, dict):
-                message = first.get("msg") or first.get("message")
-                if isinstance(message, str) and message.strip():
-                    return message.strip()
-        message = payload.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-        exception = payload.get("exception")
-        if isinstance(exception, str) and exception.strip():
-            return exception.strip()
+        for key in ("detail", "_server_messages", "message", "exception", "exc", "_error_message", "exc_type"):
+            detail = extract_text(payload.get(key))
+            if detail:
+                return detail
+        detail = extract_text(payload)
+        if detail:
+            return detail
     text = getattr(response, "text", "") or ""
     text = text.strip()
     if text:
