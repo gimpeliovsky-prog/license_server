@@ -24,7 +24,7 @@ MOBILE_APP_DOCTYPES: tuple[str, ...] = (
     "Sales Taxes and Charges Template",
 )
 
-MOBILE_APP_METHODS: tuple[str, ...] = ("GET", "POST", "PUT")
+MOBILE_APP_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "DELETE")
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,9 @@ def get_allowlist(db: Session) -> Allowlist:
 
     doctypes = [entry.value for entry in entries if entry.entry_type == ERPAllowlistType.doctype]
     methods = [entry.value for entry in entries if entry.entry_type == ERPAllowlistType.method]
-    return Allowlist(build_doctype_map(doctypes), {normalize_method(value) for value in methods})
+    normalized_methods = {normalize_method(value) for value in methods}
+    normalized_methods.update(MOBILE_APP_METHODS)
+    return Allowlist(build_doctype_map(doctypes), normalized_methods)
 
 
 def build_doctype_map(values: list[str]) -> dict[str, str]:

@@ -106,7 +106,7 @@ class Settings(BaseSettings):
         alias="ERP_ALLOWED_DOCTYPES",
     )
     erp_allowed_methods: list[str] = Field(
-        default_factory=lambda: ["GET", "POST", "PUT"],
+        default_factory=lambda: ["GET", "POST", "PUT", "DELETE"],
         alias="ERP_ALLOWED_METHODS",
     )
 
