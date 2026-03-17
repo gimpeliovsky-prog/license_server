@@ -138,7 +138,7 @@ def create_pick_list_from_preview(tenant: Tenant, preview: PickListPreview) -> s
 
 
 def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> str:
-    ensure_document_submitted(tenant, "Pick List", pick_list_name)
+    pick_list_doc = ensure_document_submitted(tenant, "Pick List", pick_list_name)
     draft_doc = request_delivery_note_draft(tenant, pick_list_name)
     payload = sanitize_for_insert(draft_doc)
     if not isinstance(payload, dict) or not payload:
@@ -149,6 +149,7 @@ def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> 
             retryable=True,
             erp_refused=False,
         )
+    ensure_delivery_note_customer(tenant, pick_list_doc, draft_doc, payload)
 
     response = request_erpnext(
         tenant.erpnext_url,
@@ -184,6 +185,72 @@ def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> 
             erp_refused=False,
         )
     return delivery_note_name
+
+
+def ensure_delivery_note_customer(
+    tenant: Tenant,
+    pick_list_doc: dict[str, Any],
+    delivery_note_draft: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    customer = (
+        _as_string(payload.get("customer"))
+        or _as_string(delivery_note_draft.get("customer"))
+        or _as_string(pick_list_doc.get("customer"))
+        or _resolve_customer_from_sales_order(tenant, delivery_note_draft, pick_list_doc)
+    )
+    if not customer:
+        raise PickListProcessError(
+            "Delivery Note draft is missing Customer, and no customer could be resolved from Pick List or Sales Order.",
+            status_code=409,
+            reason_code="missing_customer",
+            retryable=False,
+            erp_refused=True,
+        )
+    payload["customer"] = customer
+
+    customer_name = (
+        _as_string(payload.get("customer_name"))
+        or _as_string(delivery_note_draft.get("customer_name"))
+        or _as_string(pick_list_doc.get("customer_name"))
+    )
+    if not customer_name:
+        sales_order = _resolve_sales_order_name(delivery_note_draft, pick_list_doc)
+        if sales_order:
+            sales_order_doc = fetch_sales_order_details(tenant, sales_order)
+            customer_name = _as_string(sales_order_doc.get("customer_name"))
+    if customer_name and not _as_string(payload.get("customer_name")):
+        payload["customer_name"] = customer_name
+
+
+def _resolve_customer_from_sales_order(
+    tenant: Tenant,
+    delivery_note_draft: dict[str, Any],
+    pick_list_doc: dict[str, Any],
+) -> str | None:
+    sales_order = _resolve_sales_order_name(delivery_note_draft, pick_list_doc)
+    if not sales_order:
+        return None
+    sales_order_doc = fetch_sales_order_details(tenant, sales_order)
+    return _as_string(sales_order_doc.get("customer"))
+
+
+def _resolve_sales_order_name(*documents: dict[str, Any]) -> str | None:
+    for document in documents:
+        direct = _as_string(document.get("sales_order"))
+        if direct:
+            return direct
+        for child_key in ("items", "locations"):
+            entries = document.get(child_key)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                sales_order = _as_string(entry.get("sales_order"))
+                if sales_order:
+                    return sales_order
+    return None
 
 
 def ensure_document_submitted(tenant: Tenant, doctype: str, docname: str) -> dict[str, Any]:
