@@ -16,6 +16,7 @@ from app.schemas import (
     PickListFromSalesOrderPreviewResponse,
     PickListFromSalesOrderRequest,
     PickListFromSalesOrderShortageResponse,
+    ProcessJobBatchRequest,
     ProcessJobResponse,
 )
 from app.services.audit import write_audit_log
@@ -51,6 +52,19 @@ from app.services.permissions import (
 )
 
 router = APIRouter(tags=["erpnext"])
+
+
+def serialize_process_job_response(job: ProcessJob) -> ProcessJobResponse:
+    return ProcessJobResponse(
+        job_id=str(job.id),
+        job_type=job.job_type,
+        status=job.status.value,
+        correlation_id=job.correlation_id,
+        result=job.result_meta,
+        error_message=job.error_message,
+        error_code=(job.result_meta or {}).get("error_code") if isinstance(job.result_meta, dict) else None,
+        retryable=(job.result_meta or {}).get("retryable") if isinstance(job.result_meta, dict) else None,
+    )
 
 
 def process_error_detail(
@@ -892,16 +906,51 @@ def get_process_job(
     )
     if not job:
         raise HTTPException(status_code=404, detail="Process job not found")
-    return ProcessJobResponse(
-        job_id=str(job.id),
-        job_type=job.job_type,
-        status=job.status.value,
-        correlation_id=job.correlation_id,
-        result=job.result_meta,
-        error_message=job.error_message,
-        error_code=(job.result_meta or {}).get("error_code") if isinstance(job.result_meta, dict) else None,
-        retryable=(job.result_meta or {}).get("retryable") if isinstance(job.result_meta, dict) else None,
+    return serialize_process_job_response(job)
+
+
+@router.post(
+    "/process/jobs/batch",
+    response_model=list[ProcessJobResponse],
+)
+def get_process_jobs_batch(
+    payload: ProcessJobBatchRequest,
+    db: Session = Depends(get_db),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_PICKLISTS_WRITE)
+    normalized_ids: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    for raw_id in payload.job_ids:
+        text = raw_id.strip()
+        if not text:
+            continue
+        try:
+            job_uuid = uuid.UUID(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid process job id: {text}") from exc
+        if job_uuid in seen:
+            continue
+        seen.add(job_uuid)
+        normalized_ids.append(job_uuid)
+
+    if not normalized_ids:
+        return []
+
+    jobs = (
+        db.query(ProcessJob)
+        .filter(
+            ProcessJob.id.in_(normalized_ids),
+            ProcessJob.tenant_id == context.tenant.id,
+        )
+        .all()
     )
+    jobs_by_id = {job.id: job for job in jobs}
+    missing = [str(job_id) for job_id in normalized_ids if job_id not in jobs_by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Process job not found: {missing[0]}")
+
+    return [serialize_process_job_response(jobs_by_id[job_id]) for job_id in normalized_ids]
 
 
 @router.get("/sales-orders")

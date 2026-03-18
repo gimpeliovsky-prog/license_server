@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from app.schemas.tenant_config import TenantConfigSnapshot
 
 
 class ServerCapabilitiesResponse(BaseModel):
@@ -68,3 +69,4 @@ class CurrentUserResponse(BaseModel):
     erp_roles: list[str] = Field(default_factory=list)
     app_permissions: list[str] = Field(default_factory=list)
     capabilities: ServerCapabilitiesResponse = Field(default_factory=ServerCapabilitiesResponse)
+    tenant_config_snapshot: TenantConfigSnapshot | None = None

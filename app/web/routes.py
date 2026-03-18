@@ -58,6 +58,7 @@ from app.services.process_jobs import (
 from app.services.process_job_runner import notify_process_job_runner
 from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.schemas.admin import LicenseDiagnosticsRequest
+from app.schemas.tenant_config import TenantConfigSnapshot
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
@@ -107,6 +108,45 @@ def normalize_license_description(value: str | None) -> str | None:
 
 def _safe_json_dict(value) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _default_tenant_config_payload() -> dict:
+    return {
+        "access": {
+            "client_profile": "STANDARD",
+            "pick_list_images_enabled": False,
+            "erp_custom_fields_enabled": False,
+            "box_count_feature_enabled": False,
+            "or_qty_label": None,
+            "or_qty_required": True,
+        },
+        "barcodes": [],
+        "scales": {
+            "scale_enabled": False,
+            "scale_unit": "kg",
+            "hosts": [],
+        },
+    }
+
+
+def build_tenant_config_snapshot(tenant: Tenant) -> TenantConfigSnapshot:
+    payload = _safe_json_dict(tenant.tenant_config)
+    merged_payload = _default_tenant_config_payload()
+    merged_payload.update(payload)
+    if isinstance(payload.get("access"), dict):
+        merged_payload["access"] = {**merged_payload["access"], **payload["access"]}
+    if isinstance(payload.get("scales"), dict):
+        merged_payload["scales"] = {**merged_payload["scales"], **payload["scales"]}
+    if isinstance(payload.get("barcodes"), list):
+        merged_payload["barcodes"] = payload["barcodes"]
+
+    return TenantConfigSnapshot(
+        config_revision=(tenant.tenant_config_revision or "").strip(),
+        settings_scope="tenant",
+        updated_at=tenant.tenant_config_updated_at.isoformat() if tenant.tenant_config_updated_at else None,
+        updated_by=(tenant.tenant_config_updated_by or "").strip() or None,
+        payload=merged_payload,
+    )
 
 
 def fetch_tenant_doctypes(tenant: Tenant) -> list[dict[str, object]]:
@@ -599,6 +639,13 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         .all()
     )
     message, error, license_key = pop_flash(request)
+    tenant_config_snapshot = build_tenant_config_snapshot(tenant)
+    tenant_config_payload_json = request.session.pop("flash_tenant_config_payload", None) or json.dumps(
+        tenant_config_snapshot.payload.model_dump(mode="python"),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
 
     context = build_admin_context(
         request,
@@ -610,6 +657,8 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         message=message,
         error=error,
         new_license_key=license_key,
+        tenant_config_snapshot=tenant_config_snapshot,
+        tenant_config_payload_json=tenant_config_payload_json,
         tenant_statuses=[status.value for status in TenantStatus],
         license_statuses=[status.value for status in LicenseKeyStatus],
         csrf_token=get_csrf_token(request),
@@ -935,6 +984,67 @@ async def update_subscription(request: Request, company_code: str, db: Session =
 
     db.commit()
     set_flash(request, message="Subscription updated")
+    return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+
+@router.post("/tenants/{company_code}/tenant-config")
+async def update_tenant_config(request: Request, company_code: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    tenant = get_tenant_or_none(db, company_code)
+    if not tenant:
+        set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/tenants")
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
+    current_revision = (tenant.tenant_config_revision or "").strip()
+    submitted_revision = str(form.get("config_revision") or "").strip()
+    if current_revision and submitted_revision and submitted_revision != current_revision:
+        request.session["flash_tenant_config_payload"] = str(form.get("payload_json") or "")
+        set_flash(request, error="Tenant config revision mismatch. Reload the page and try again.")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    raw_payload = str(form.get("payload_json") or "").strip()
+    if not raw_payload:
+        set_flash(request, error="Tenant config payload is required")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    try:
+        parsed_payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        request.session["flash_tenant_config_payload"] = raw_payload
+        set_flash(request, error=f"Invalid JSON: {exc.msg}")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    if not isinstance(parsed_payload, dict):
+        request.session["flash_tenant_config_payload"] = raw_payload
+        set_flash(request, error="Tenant config payload must be a JSON object")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    try:
+        snapshot = TenantConfigSnapshot(
+            config_revision=current_revision,
+            settings_scope="tenant",
+            payload=parsed_payload,
+        )
+    except ValidationError as exc:
+        request.session["flash_tenant_config_payload"] = raw_payload
+        details = "; ".join(err.get("msg", "Invalid config") for err in exc.errors())
+        set_flash(request, error=details or "Invalid tenant config payload")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    tenant.tenant_config = snapshot.payload.model_dump(mode="python")
+    tenant.tenant_config_revision = uuid.uuid4().hex
+    tenant.tenant_config_updated_by = "admin-ui"
+    tenant.tenant_config_updated_at = utcnow()
+    db.commit()
+    set_flash(request, message="Tenant config updated")
     return redirect_to(f"/admin-ui/tenants/{company_code}")
 
 

@@ -58,3 +58,7 @@ class ProcessJobCleanupResponse(BaseModel):
     dry_run: bool
     matched_count: int
     deleted_count: int
+
+
+class ProcessJobBatchRequest(BaseModel):
+    job_ids: list[str] = Field(default_factory=list, max_length=100)

@@ -36,6 +36,7 @@ from app.schemas.picklist_process import (
     PickListFromSalesOrderShortageResponse,
 )
 from app.schemas.process_jobs import (
+    ProcessJobBatchRequest,
     ProcessJobCleanupRequest,
     ProcessJobCleanupResponse,
     ProcessJobListItemResponse,
@@ -43,6 +44,7 @@ from app.schemas.process_jobs import (
     ProcessJobSummaryResponse,
 )
 from app.schemas.status import StatusResponse
+from app.schemas.tenant_config import TenantConfigSnapshot
 
 __all__ = [
     "ActivateRequest",
@@ -77,9 +79,11 @@ __all__ = [
     "PickListCompleteRequest",
     "PickListCompleteResponse",
     "ProcessJobResponse",
+    "ProcessJobBatchRequest",
     "ProcessJobCleanupRequest",
     "ProcessJobCleanupResponse",
     "ProcessJobListItemResponse",
     "ProcessJobListResponse",
     "ProcessJobSummaryResponse",
+    "TenantConfigSnapshot",
 ]

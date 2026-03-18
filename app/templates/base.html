@@ -164,12 +164,17 @@
     .table-plain-header th { color: #111111; }
     form { margin: 0; }
     label { display: block; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
-    input, select, button {
+    input, select, textarea, button {
       padding: 8px 10px;
       border-radius: 6px;
       border: 1px solid var(--border);
       font-size: 14px;
       width: 100%;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 160px;
+      line-height: 1.45;
     }
     input[type="checkbox"] { width: auto; }
     button {

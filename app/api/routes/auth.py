@@ -39,6 +39,7 @@ from app.schemas import (
     PairingRegisterRequest,
     PairingRegisterResponse,
     ServerCapabilitiesResponse,
+    TenantConfigSnapshot,
     TokenResponse,
 )
 from app.services.auth import create_access_token
@@ -47,7 +48,11 @@ from app.services.erpnext import ERPNextError, request_erpnext
 from app.services.erp_user_sync import upsert_erp_user_login
 from app.services.license import fingerprint_license_key, verify_license_key_flexible
 from app.services.pairing import create_pairing_token, hash_pairing_token
-from app.services.permissions import resolve_app_permissions
+from app.services.permissions import (
+    PERMISSION_TENANT_CONFIG_READ,
+    PERMISSION_TENANT_CONFIG_WRITE,
+    resolve_app_permissions,
+)
 from app.utils.time import utcnow
 
 router = APIRouter(tags=["auth"])
@@ -222,6 +227,58 @@ def _parse_enabled(value: Any) -> bool:
 
 def _safe_json_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _default_tenant_config_payload() -> dict[str, Any]:
+    return {
+        "access": {
+            "client_profile": "STANDARD",
+            "pick_list_images_enabled": False,
+            "erp_custom_fields_enabled": False,
+            "box_count_feature_enabled": False,
+            "or_qty_label": None,
+            "or_qty_required": True,
+        },
+        "barcodes": [],
+        "scales": {
+            "scale_enabled": False,
+            "scale_unit": "kg",
+            "hosts": [],
+        },
+    }
+
+
+def _tenant_config_permissions_declared(context: RequestContext) -> bool:
+    return (
+        PERMISSION_TENANT_CONFIG_READ in context.app_permissions
+        or PERMISSION_TENANT_CONFIG_WRITE in context.app_permissions
+    )
+
+
+def _can_write_tenant_config(context: RequestContext) -> bool:
+    if PERMISSION_TENANT_CONFIG_WRITE in context.app_permissions:
+        return True
+    return not _tenant_config_permissions_declared(context)
+
+
+def _serialize_tenant_config_snapshot(tenant: Tenant) -> TenantConfigSnapshot:
+    payload = _safe_json_dict(tenant.tenant_config)
+    merged_payload = _default_tenant_config_payload()
+    merged_payload.update(payload)
+    if isinstance(payload.get("access"), dict):
+        merged_payload["access"] = {**merged_payload["access"], **payload["access"]}
+    if isinstance(payload.get("scales"), dict):
+        merged_payload["scales"] = {**merged_payload["scales"], **payload["scales"]}
+    if isinstance(payload.get("barcodes"), list):
+        merged_payload["barcodes"] = payload["barcodes"]
+
+    return TenantConfigSnapshot(
+        config_revision=(tenant.tenant_config_revision or "").strip(),
+        settings_scope="tenant",
+        updated_at=tenant.tenant_config_updated_at.isoformat() if tenant.tenant_config_updated_at else None,
+        updated_by=(tenant.tenant_config_updated_by or "").strip() or None,
+        payload=merged_payload,
+    )
 
 
 def _resolve_tenant_id_by_company_code(db: Session, company_code: str | None) -> uuid.UUID | None:
@@ -910,4 +967,36 @@ def me(context=Depends(get_erp_request_context), db: Session = Depends(get_db)) 
         erp_roles=list(context.erp_roles),
         app_permissions=sorted(context.app_permissions),
         capabilities=_build_server_capabilities(context),
+        tenant_config_snapshot=_serialize_tenant_config_snapshot(context.tenant),
     )
+
+
+@router.get("/tenant-config", response_model=TenantConfigSnapshot)
+def get_tenant_config(context=Depends(get_erp_request_context)) -> TenantConfigSnapshot:
+    return _serialize_tenant_config_snapshot(context.tenant)
+
+
+@router.put("/tenant-config", response_model=TenantConfigSnapshot)
+def put_tenant_config(
+    payload: TenantConfigSnapshot,
+    context=Depends(get_erp_request_context),
+    db: Session = Depends(get_db),
+) -> TenantConfigSnapshot:
+    if not _can_write_tenant_config(context):
+        raise HTTPException(status_code=403, detail="Permission denied: tenant_config.write")
+
+    current_revision = (context.tenant.tenant_config_revision or "").strip()
+    incoming_revision = payload.config_revision.strip()
+    if current_revision and incoming_revision and incoming_revision != current_revision:
+        raise HTTPException(status_code=409, detail="Tenant config revision mismatch")
+
+    now = utcnow()
+    next_revision = uuid.uuid4().hex
+    context.tenant.tenant_config = payload.payload.model_dump(mode="python")
+    context.tenant.tenant_config_revision = next_revision
+    context.tenant.tenant_config_updated_by = (context.erp_username or "").strip() or None
+    context.tenant.tenant_config_updated_at = now
+    db.add(context.tenant)
+    db.commit()
+    db.refresh(context.tenant)
+    return _serialize_tenant_config_snapshot(context.tenant)

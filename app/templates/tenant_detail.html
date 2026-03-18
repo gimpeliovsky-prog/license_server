@@ -97,6 +97,28 @@
 </div>
 
 <div class="panel">
+  <h2>Tenant config</h2>
+  <p class="muted">Tenant-specific mobile settings snapshot stored on the license server. Edit only the JSON payload; revision and metadata are managed automatically.</p>
+  <table>
+    <tbody>
+      <tr><th>Revision</th><td style="font-family: monospace;">{{ tenant_config_snapshot.config_revision or "-" }}</td></tr>
+      <tr><th>Updated by</th><td>{{ tenant_config_snapshot.updated_by or "-" }}</td></tr>
+      <tr><th>Updated at</th><td>{{ tenant_config_snapshot.updated_at or "-" }}</td></tr>
+      <tr><th>Scope</th><td>{{ tenant_config_snapshot.settings_scope }}</td></tr>
+    </tbody>
+  </table>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/tenant-config" style="margin-top: 12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="config_revision" value="{{ tenant_config_snapshot.config_revision }}">
+    <label>Payload JSON</label>
+    <textarea name="payload_json" rows="22" spellcheck="false" style="font-family: Consolas, 'Courier New', monospace; width: 100%;">{{ tenant_config_payload_json }}</textarea>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-block">Save tenant config</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
   <h2>License keys</h2>
   {% if licenses %}
   <table>
