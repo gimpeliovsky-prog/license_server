@@ -846,9 +846,9 @@ def refresh(request: Request, context=Depends(get_request_context)) -> TokenResp
     if not context.subscription_active:
         raise HTTPException(status_code=403, detail="Subscription expired")
 
-    app_permissions = list(context.token.app_permissions)
-    if not app_permissions and context.token.erp_roles:
-        app_permissions = sorted(resolve_app_permissions(context.token.erp_roles))
+    app_permissions = sorted(resolve_app_permissions(context.token.erp_roles))
+    if not app_permissions:
+        app_permissions = list(context.token.app_permissions)
 
     now = utcnow()
     token, token_data = create_access_token(
