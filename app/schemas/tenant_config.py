@@ -3,6 +3,26 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class TenantBarcodeConfigPayload(BaseModel):
+    id: str = ""
+    name: str = ""
+    type: str = "FIXED_OFFSET"
+    prefix: str = ""
+    pattern: str = ""
+    itemCodeStart: int = 0
+    itemCodeLength: int = 0
+    weightStart: int = 0
+    weightLength: int = 0
+    weightDecimals: int = 3
+    lotStart: int = 0
+    lotLength: int = 0
+    expectedItemCodeFragment: str | None = None
+    resolvedItemCode: str | None = None
+    isActive: bool = True
+
+    model_config = ConfigDict(extra="allow")
+
+
 class TenantConfigAccessPayload(BaseModel):
     client_profile: str = "STANDARD"
     pick_list_images_enabled: bool = False
@@ -31,7 +51,7 @@ class TenantConfigScalesPayload(BaseModel):
 
 class TenantConfigPayload(BaseModel):
     access: TenantConfigAccessPayload = Field(default_factory=TenantConfigAccessPayload)
-    barcodes: list[dict[str, Any]] = Field(default_factory=list)
+    barcodes: list[TenantBarcodeConfigPayload] = Field(default_factory=list)
     scales: TenantConfigScalesPayload = Field(default_factory=TenantConfigScalesPayload)
 
     model_config = ConfigDict(extra="allow")

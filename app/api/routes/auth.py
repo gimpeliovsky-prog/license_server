@@ -249,14 +249,20 @@ def _default_tenant_config_payload() -> dict[str, Any]:
 
 
 def _tenant_config_permissions_declared(context: RequestContext) -> bool:
-    return (
-        PERMISSION_TENANT_CONFIG_READ in context.app_permissions
-        or PERMISSION_TENANT_CONFIG_WRITE in context.app_permissions
-    )
+    return bool(context.app_permissions)
 
 
 def _can_write_tenant_config(context: RequestContext) -> bool:
     if PERMISSION_TENANT_CONFIG_WRITE in context.app_permissions:
+        return True
+    return not _tenant_config_permissions_declared(context)
+
+
+def _can_read_tenant_config(context: RequestContext) -> bool:
+    if (
+        PERMISSION_TENANT_CONFIG_READ in context.app_permissions
+        or PERMISSION_TENANT_CONFIG_WRITE in context.app_permissions
+    ):
         return True
     return not _tenant_config_permissions_declared(context)
 
@@ -967,12 +973,18 @@ def me(context=Depends(get_erp_request_context), db: Session = Depends(get_db)) 
         erp_roles=list(context.erp_roles),
         app_permissions=sorted(context.app_permissions),
         capabilities=_build_server_capabilities(context),
-        tenant_config_snapshot=_serialize_tenant_config_snapshot(context.tenant),
+        tenant_config_snapshot=(
+            _serialize_tenant_config_snapshot(context.tenant)
+            if _can_read_tenant_config(context)
+            else None
+        ),
     )
 
 
 @router.get("/tenant-config", response_model=TenantConfigSnapshot)
 def get_tenant_config(context=Depends(get_erp_request_context)) -> TenantConfigSnapshot:
+    if not _can_read_tenant_config(context):
+        raise HTTPException(status_code=403, detail="Permission denied: tenant_config.read")
     return _serialize_tenant_config_snapshot(context.tenant)
 
 

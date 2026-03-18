@@ -6,6 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.deps import RequestContext
+from pydantic import ValidationError
+
 from app.api.routes.auth import get_tenant_config, put_tenant_config
 from app.models import Tenant, TenantStatus
 from app.schemas import TenantConfigSnapshot
@@ -61,8 +63,18 @@ def test_get_tenant_config_returns_snapshot():
     assert snapshot.config_revision == "rev-1"
     assert snapshot.updated_by == "admin@example.com"
     assert snapshot.payload.access.client_profile == "STANDARD"
-    assert snapshot.payload.barcodes[0]["id"] == "rule-1"
+    assert snapshot.payload.barcodes[0].id == "rule-1"
     assert snapshot.payload.scales.hosts[0].host == "10.0.0.10"
+
+
+def test_get_tenant_config_rejects_user_without_read_permission_when_explicit_permissions_present():
+    context = _build_context("items.read")
+
+    with pytest.raises(HTTPException) as exc:
+        get_tenant_config(context=context)
+
+    assert exc.value.status_code == 403
+    assert "tenant_config.read" in str(exc.value.detail)
 
 
 def test_put_tenant_config_allows_legacy_write_without_explicit_permissions():
@@ -114,3 +126,12 @@ def test_put_tenant_config_rejects_revision_mismatch():
     assert exc.value.status_code == 409
     assert "revision mismatch" in str(exc.value.detail).lower()
     db.commit.assert_not_called()
+
+
+def test_tenant_config_snapshot_rejects_invalid_barcode_payload_shape():
+    with pytest.raises(ValidationError):
+        TenantConfigSnapshot(
+            payload={
+                "barcodes": [123],
+            }
+        )
