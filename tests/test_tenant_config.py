@@ -29,6 +29,7 @@ def _build_context(*permissions: str) -> RequestContext:
             "access": {"client_profile": "STANDARD"},
             "barcodes": [{"id": "rule-1", "name": "Rule 1"}],
             "scales": {"scale_enabled": True, "scale_unit": "kg", "hosts": [{"host": "10.0.0.10"}]},
+            "fulfillment_rules": [{"item_code": "ITEM-1", "mode": "FIXED_PACK"}],
         },
         tenant_config_revision="rev-1",
         tenant_config_updated_by="admin@example.com",
@@ -65,6 +66,7 @@ def test_get_tenant_config_returns_snapshot():
     assert snapshot.payload.access.client_profile == "STANDARD"
     assert snapshot.payload.barcodes[0].id == "rule-1"
     assert snapshot.payload.scales.hosts[0].host == "10.0.0.10"
+    assert "fulfillment_rules" not in snapshot.payload.model_dump(mode="python")
 
 
 def test_get_tenant_config_rejects_user_without_read_permission_when_explicit_permissions_present():
@@ -86,6 +88,7 @@ def test_put_tenant_config_allows_legacy_write_without_explicit_permissions():
             "access": {"client_profile": "TAMER", "pick_list_images_enabled": True},
             "barcodes": [{"id": "rule-2", "name": "Weight"}],
             "scales": {"scale_enabled": False, "scale_unit": "g", "hosts": []},
+            "fulfillment_rules": [{"item_code": "ITEM-2", "mode": "VARIABLE_WEIGHT_PACK"}],
         },
     )
 
@@ -97,6 +100,8 @@ def test_put_tenant_config_allows_legacy_write_without_explicit_permissions():
     assert snapshot.payload.access.client_profile == "TAMER"
     assert snapshot.payload.scales.scale_unit == "g"
     assert context.tenant.tenant_config["barcodes"][0]["id"] == "rule-2"
+    assert "fulfillment_rules" not in context.tenant.tenant_config
+    assert "fulfillment_rules" not in snapshot.payload.model_dump(mode="python")
     db.add.assert_called_once_with(context.tenant)
     db.commit.assert_called_once()
     db.refresh.assert_called_once_with(context.tenant)

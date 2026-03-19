@@ -129,8 +129,14 @@ def _default_tenant_config_payload() -> dict:
     }
 
 
+def _sanitize_tenant_config_payload(payload: dict) -> dict:
+    sanitized = dict(payload)
+    sanitized.pop("fulfillment_rules", None)
+    return sanitized
+
+
 def build_tenant_config_snapshot(tenant: Tenant) -> TenantConfigSnapshot:
-    payload = _safe_json_dict(tenant.tenant_config)
+    payload = _sanitize_tenant_config_payload(_safe_json_dict(tenant.tenant_config))
     merged_payload = _default_tenant_config_payload()
     merged_payload.update(payload)
     if isinstance(payload.get("access"), dict):
@@ -1039,7 +1045,7 @@ async def update_tenant_config(request: Request, company_code: str, db: Session 
         set_flash(request, error=details or "Invalid tenant config payload")
         return redirect_to(f"/admin-ui/tenants/{company_code}")
 
-    tenant.tenant_config = snapshot.payload.model_dump(mode="python")
+    tenant.tenant_config = _sanitize_tenant_config_payload(snapshot.payload.model_dump(mode="python"))
     tenant.tenant_config_revision = uuid.uuid4().hex
     tenant.tenant_config_updated_by = "admin-ui"
     tenant.tenant_config_updated_at = utcnow()

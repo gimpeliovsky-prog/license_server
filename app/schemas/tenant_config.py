@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TenantBarcodeConfigPayload(BaseModel):
@@ -55,6 +55,15 @@ class TenantConfigPayload(BaseModel):
     scales: TenantConfigScalesPayload = Field(default_factory=TenantConfigScalesPayload)
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            sanitized = dict(value)
+            sanitized.pop("fulfillment_rules", None)
+            return sanitized
+        return value
 
 
 class TenantConfigSnapshot(BaseModel):

@@ -248,6 +248,12 @@ def _default_tenant_config_payload() -> dict[str, Any]:
     }
 
 
+def _sanitize_tenant_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload)
+    sanitized.pop("fulfillment_rules", None)
+    return sanitized
+
+
 def _tenant_config_permissions_declared(context: RequestContext) -> bool:
     return bool(context.app_permissions)
 
@@ -268,7 +274,7 @@ def _can_read_tenant_config(context: RequestContext) -> bool:
 
 
 def _serialize_tenant_config_snapshot(tenant: Tenant) -> TenantConfigSnapshot:
-    payload = _safe_json_dict(tenant.tenant_config)
+    payload = _sanitize_tenant_config_payload(_safe_json_dict(tenant.tenant_config))
     merged_payload = _default_tenant_config_payload()
     merged_payload.update(payload)
     if isinstance(payload.get("access"), dict):
@@ -1004,7 +1010,7 @@ def put_tenant_config(
 
     now = utcnow()
     next_revision = uuid.uuid4().hex
-    context.tenant.tenant_config = payload.payload.model_dump(mode="python")
+    context.tenant.tenant_config = _sanitize_tenant_config_payload(payload.payload.model_dump(mode="python"))
     context.tenant.tenant_config_revision = next_revision
     context.tenant.tenant_config_updated_by = (context.erp_username or "").strip() or None
     context.tenant.tenant_config_updated_at = now
