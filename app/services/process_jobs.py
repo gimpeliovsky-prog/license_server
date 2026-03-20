@@ -14,6 +14,8 @@ from app.services.picklist_process import (
     PickListProcessError,
     create_delivery_note_from_pick_list,
     ensure_document_submitted,
+    get_linked_delivery_note_name,
+    remember_delivery_note_link,
 )
 from app.utils.time import utcnow
 
@@ -330,7 +332,12 @@ def run_picklist_complete_job(job_id: uuid.UUID) -> None:
         ensure_document_submitted(tenant, "Pick List", pick_list_name)
         delivery_note_name = None
         if create_delivery_note:
-            delivery_note_name = create_delivery_note_from_pick_list(tenant, pick_list_name)
+            linked_delivery_note_name = get_linked_delivery_note_name(db, tenant, pick_list_name)
+            if linked_delivery_note_name:
+                delivery_note_name = linked_delivery_note_name
+            else:
+                delivery_note_name = create_delivery_note_from_pick_list(tenant, pick_list_name)
+                remember_delivery_note_link(db, tenant, pick_list_name, delivery_note_name)
 
         job.status = ProcessJobStatus.succeeded
         job.result_meta = {

@@ -23,13 +23,17 @@ from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
 from app.services.erpnext import ERPNextError, default_fields, request_erpnext
 from app.services.idempotency import build_request_hash, extract_idempotency_key, get_replay_if_match, store_response
-from app.models import ProcessJob
+from app.models import ProcessJob, Tenant
 from app.services.picklist_process import (
     PickListProcessError,
     create_delivery_note_from_pick_list,
     create_pick_list_from_preview,
+    get_linked_delivery_note_name,
+    get_linked_pick_list_name,
     ensure_document_submitted,
     preview_pick_list_from_sales_order,
+    remember_delivery_note_link,
+    remember_pick_list_link,
 )
 from app.services.process_jobs import (
     JOB_TYPE_PICKLIST_COMPLETE,
@@ -534,6 +538,37 @@ def preview_picklist_from_sales_order_process(
         if replay:
             return build_json_replay_response(replay)
     try:
+        existing_pick_list_name = get_linked_pick_list_name(db, context.tenant, payload.sales_order_name)
+        if existing_pick_list_name:
+            response_payload = PickListFromSalesOrderPreviewResponse(
+                sales_order_name=payload.sales_order_name.strip(),
+                pick_list_name=existing_pick_list_name,
+                existing_pick_list=True,
+                allocated_line_count=0,
+                shortage_count=0,
+                can_create=False,
+                shortages=[],
+            )
+            write_audit_log(
+                db,
+                context,
+                action="picklist_preview_existing",
+                meta={
+                    "sales_order_name": payload.sales_order_name,
+                    "pick_list_name": existing_pick_list_name,
+                    "correlation_id": getattr(request.state, "correlation_id", None),
+                },
+            )
+            db.commit()
+            return store_json_idempotent_response(
+                db,
+                context,
+                method="POST",
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                payload=response_payload,
+            )
         preview = preview_pick_list_from_sales_order(context.tenant, payload.sales_order_name)
     except PickListProcessError as exc:
         write_audit_log(
@@ -572,6 +607,8 @@ def preview_picklist_from_sales_order_process(
 
     response_payload = PickListFromSalesOrderPreviewResponse(
         sales_order_name=preview.sales_order_name,
+        pick_list_name=None,
+        existing_pick_list=False,
         allocated_line_count=preview.allocated_line_count,
         shortage_count=len(preview.shortages),
         can_create=preview.allocated_line_count > 0,
@@ -630,7 +667,43 @@ def create_picklist_from_sales_order_process(
         replay = get_replay_if_match(db, context.tenant.id, "POST", endpoint, idempotency_key, request_hash)
         if replay:
             return build_json_replay_response(replay)
+    (
+        db.query(Tenant)
+        .filter(Tenant.id == context.tenant.id)
+        .with_for_update()
+        .first()
+    )
     try:
+        existing_pick_list_name = get_linked_pick_list_name(db, context.tenant, payload.sales_order_name)
+        if existing_pick_list_name:
+            response_payload = PickListFromSalesOrderCreateResponse(
+                sales_order_name=payload.sales_order_name.strip(),
+                pick_list_name=existing_pick_list_name,
+                created=False,
+                allocated_line_count=0,
+                shortage_count=0,
+                has_shortages=False,
+            )
+            write_audit_log(
+                db,
+                context,
+                action="picklist_create_existing",
+                meta={
+                    "sales_order_name": payload.sales_order_name,
+                    "pick_list_name": existing_pick_list_name,
+                    "correlation_id": getattr(request.state, "correlation_id", None),
+                },
+            )
+            db.commit()
+            return store_json_idempotent_response(
+                db,
+                context,
+                method="POST",
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                payload=response_payload,
+            )
         preview = preview_pick_list_from_sales_order(context.tenant, payload.sales_order_name)
         if preview.allocated_line_count <= 0:
             raise HTTPException(
@@ -653,6 +726,7 @@ def create_picklist_from_sales_order_process(
                 ),
             )
         pick_list_name = create_pick_list_from_preview(context.tenant, preview)
+        remember_pick_list_link(db, context.tenant, payload.sales_order_name, pick_list_name)
     except PickListProcessError as exc:
         write_audit_log(
             db,
@@ -691,6 +765,7 @@ def create_picklist_from_sales_order_process(
     response_payload = PickListFromSalesOrderCreateResponse(
         sales_order_name=preview.sales_order_name,
         pick_list_name=pick_list_name,
+        created=True,
         allocated_line_count=preview.allocated_line_count,
         shortage_count=len(preview.shortages),
         has_shortages=bool(preview.shortages),
@@ -746,7 +821,12 @@ def complete_picklist_process(
         ensure_document_submitted(context.tenant, "Pick List", pick_list_name)
         delivery_note_name = None
         if payload.create_delivery_note:
-            delivery_note_name = create_delivery_note_from_pick_list(context.tenant, pick_list_name)
+            linked_delivery_note_name = get_linked_delivery_note_name(db, context.tenant, pick_list_name)
+            if linked_delivery_note_name:
+                delivery_note_name = linked_delivery_note_name
+            else:
+                delivery_note_name = create_delivery_note_from_pick_list(context.tenant, pick_list_name)
+                remember_delivery_note_link(db, context.tenant, pick_list_name, delivery_note_name)
     except PickListProcessError as exc:
         write_audit_log(
             db,

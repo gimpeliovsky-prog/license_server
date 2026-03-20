@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from sqlalchemy.orm import Session
+
+from app.models import PickListDeliveryNoteLink, SalesOrderPickListLink
 from app.models import Tenant
 from app.services.erpnext import ERPNextError, request_erpnext
 
@@ -71,6 +74,176 @@ class PickListPreview:
     draft_doc: dict[str, Any]
     shortages: list[PickListShortage]
     allocated_line_count: int
+
+
+def get_linked_pick_list_name(db: Session, tenant: Tenant, sales_order_name: str) -> str | None:
+    normalized_name = sales_order_name.strip()
+    if not normalized_name:
+        return None
+
+    links = (
+        db.query(SalesOrderPickListLink)
+        .filter(
+            SalesOrderPickListLink.tenant_id == tenant.id,
+            SalesOrderPickListLink.sales_order_name == normalized_name,
+        )
+        .order_by(SalesOrderPickListLink.updated_at.desc(), SalesOrderPickListLink.created_at.desc())
+        .all()
+    )
+    for link in links:
+        if is_pick_list_link_active(tenant, link.pick_list_name):
+            return link.pick_list_name
+    return None
+
+
+def remember_pick_list_link(db: Session, tenant: Tenant, sales_order_name: str, pick_list_name: str) -> None:
+    normalized_sales_order = sales_order_name.strip()
+    normalized_pick_list = pick_list_name.strip()
+    if not normalized_sales_order or not normalized_pick_list:
+        return
+
+    link = (
+        db.query(SalesOrderPickListLink)
+        .filter(
+            SalesOrderPickListLink.tenant_id == tenant.id,
+            SalesOrderPickListLink.pick_list_name == normalized_pick_list,
+        )
+        .first()
+    )
+    if link is None:
+        db.add(
+            SalesOrderPickListLink(
+                tenant_id=tenant.id,
+                sales_order_name=normalized_sales_order,
+                pick_list_name=normalized_pick_list,
+            )
+        )
+    else:
+        link.pick_list_name = normalized_pick_list
+    db.flush()
+
+
+def is_pick_list_link_active(tenant: Tenant, pick_list_name: str) -> bool:
+    normalized_name = pick_list_name.strip()
+    if not normalized_name:
+        return False
+
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "GET",
+        f"/api/resource/Pick List/{quote(normalized_name, safe='')}",
+    )
+    if response.status_code == 404:
+        return False
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, "Failed to fetch linked Pick List"),
+            response.status_code,
+        )
+
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            "ERPNext returned invalid Pick List details response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    if _as_int(data.get("docstatus")) == 2:
+        return False
+    delivery_status = (_as_string(data.get("delivery_status")) or "").lower()
+    status = (_as_string(data.get("status")) or "").lower()
+    if delivery_status in {"delivered", "closed", "completed"}:
+        return False
+    if status in {"closed", "completed"}:
+        return False
+    return True
+
+
+def get_linked_delivery_note_name(db: Session, tenant: Tenant, pick_list_name: str) -> str | None:
+    normalized_name = pick_list_name.strip()
+    if not normalized_name:
+        return None
+
+    link = (
+        db.query(PickListDeliveryNoteLink)
+        .filter(
+            PickListDeliveryNoteLink.tenant_id == tenant.id,
+            PickListDeliveryNoteLink.pick_list_name == normalized_name,
+        )
+        .first()
+    )
+    if not link:
+        return None
+    if not is_delivery_note_link_active(tenant, link.delivery_note_name):
+        db.delete(link)
+        db.flush()
+        return None
+    return link.delivery_note_name
+
+
+def remember_delivery_note_link(db: Session, tenant: Tenant, pick_list_name: str, delivery_note_name: str) -> None:
+    normalized_pick_list = pick_list_name.strip()
+    normalized_delivery_note = delivery_note_name.strip()
+    if not normalized_pick_list or not normalized_delivery_note:
+        return
+
+    link = (
+        db.query(PickListDeliveryNoteLink)
+        .filter(
+            PickListDeliveryNoteLink.tenant_id == tenant.id,
+            PickListDeliveryNoteLink.pick_list_name == normalized_pick_list,
+        )
+        .first()
+    )
+    if link is None:
+        db.add(
+            PickListDeliveryNoteLink(
+                tenant_id=tenant.id,
+                pick_list_name=normalized_pick_list,
+                delivery_note_name=normalized_delivery_note,
+            )
+        )
+    else:
+        link.delivery_note_name = normalized_delivery_note
+    db.flush()
+
+
+def is_delivery_note_link_active(tenant: Tenant, delivery_note_name: str) -> bool:
+    normalized_name = delivery_note_name.strip()
+    if not normalized_name:
+        return False
+
+    response = request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        "GET",
+        f"/api/resource/Delivery Note/{quote(normalized_name, safe='')}",
+    )
+    if response.status_code == 404:
+        return False
+    if response.status_code >= 400:
+        raise build_picklist_process_error(
+            extract_response_detail(response, "Failed to fetch linked Delivery Note"),
+            response.status_code,
+        )
+
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise PickListProcessError(
+            "ERPNext returned invalid Delivery Note details response",
+            status_code=502,
+            reason_code="invalid_erp_response",
+            retryable=True,
+            erp_refused=False,
+        )
+    return _as_int(data.get("docstatus")) != 2
 
 
 def preview_pick_list_from_sales_order(tenant: Tenant, sales_order_name: str) -> PickListPreview:

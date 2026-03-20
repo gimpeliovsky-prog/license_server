@@ -19,6 +19,8 @@ class PickListFromSalesOrderShortageResponse(BaseModel):
 
 class PickListFromSalesOrderPreviewResponse(BaseModel):
     sales_order_name: str
+    pick_list_name: str | None = None
+    existing_pick_list: bool = False
     allocated_line_count: int
     shortage_count: int
     can_create: bool
@@ -28,6 +30,7 @@ class PickListFromSalesOrderPreviewResponse(BaseModel):
 class PickListFromSalesOrderCreateResponse(BaseModel):
     sales_order_name: str
     pick_list_name: str
+    created: bool = True
     allocated_line_count: int
     shortage_count: int
     has_shortages: bool

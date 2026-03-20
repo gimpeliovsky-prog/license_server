@@ -9,6 +9,8 @@ from app.models import (
     ERPUser,
     LicenseKey,
     OTAAccess,
+    PickListDeliveryNoteLink,
+    SalesOrderPickListLink,
     Tenant,
 )
 
@@ -27,6 +29,12 @@ def delete_tenant_with_dependencies(db: Session, tenant: Tenant) -> None:
         synchronize_session=False
     )
     db.query(ERPIdempotencyEntry).filter(ERPIdempotencyEntry.tenant_id == tenant.id).delete(
+        synchronize_session=False
+    )
+    db.query(SalesOrderPickListLink).filter(SalesOrderPickListLink.tenant_id == tenant.id).delete(
+        synchronize_session=False
+    )
+    db.query(PickListDeliveryNoteLink).filter(PickListDeliveryNoteLink.tenant_id == tenant.id).delete(
         synchronize_session=False
     )
 
