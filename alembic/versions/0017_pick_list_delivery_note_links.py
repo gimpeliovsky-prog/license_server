@@ -1,6 +1,6 @@
 """allow many pick lists per sales order and link delivery notes
 
-Revision ID: 0017_pick_list_delivery_note_links
+Revision ID: 0017_pick_list_dn_links
 Revises: 0016_sales_order_pick_list_links
 Create Date: 2026-03-20 13:00:00.000000
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0017_pick_list_delivery_note_links"
+revision = "0017_pick_list_dn_links"
 down_revision = "0016_sales_order_pick_list_links"
 branch_labels = None
 depends_on = None
