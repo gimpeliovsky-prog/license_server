@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -310,8 +309,11 @@ def create_pick_list_from_preview(tenant: Tenant, preview: PickListPreview) -> s
         )
     return pick_list_name
 
-
-def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> str:
+def create_delivery_note_from_pick_list(
+    tenant: Tenant,
+    pick_list_name: str,
+    completion_lines: list[dict[str, Any]] | None = None,
+) -> str:
     pick_list_doc = ensure_document_submitted(tenant, "Pick List", pick_list_name)
     draft_doc = request_delivery_note_draft(tenant, pick_list_name)
     payload = sanitize_for_insert(draft_doc)
@@ -323,7 +325,7 @@ def create_delivery_note_from_pick_list(tenant: Tenant, pick_list_name: str) -> 
             retryable=True,
             erp_refused=False,
         )
-    normalize_delivery_note_payload_quantities(pick_list_doc, draft_doc, payload)
+    normalize_delivery_note_payload_quantities(pick_list_doc, draft_doc, payload, completion_lines)
     ensure_delivery_note_customer(tenant, pick_list_doc, draft_doc, payload)
 
     response = request_erpnext(
@@ -710,6 +712,7 @@ def normalize_delivery_note_payload_quantities(
     pick_list_doc: dict[str, Any],
     draft_doc: dict[str, Any],
     payload: dict[str, Any],
+    completion_lines: list[dict[str, Any]] | None = None,
 ) -> None:
     draft_items = draft_doc.get("items")
     payload_items = payload.get("items")
@@ -720,6 +723,7 @@ def normalize_delivery_note_payload_quantities(
     indexed_pick_lines: list[tuple[int, dict[str, Any]]] = [
         (index, line) for index, line in enumerate(pick_locations) if isinstance(line, dict)
     ]
+    completion_by_pick_item = _index_completion_lines(completion_lines)
     used_indexes: set[int] = set()
 
     for original_item, payload_item in zip(draft_items, payload_items):
@@ -729,7 +733,20 @@ def normalize_delivery_note_payload_quantities(
         if matched is None:
             continue
         _, pick_line = matched
-        _normalize_delivery_item_from_pick_line(payload_item, pick_line)
+        completion_line = completion_by_pick_item.get(_as_string(pick_line.get("name")) or "")
+        _normalize_delivery_item_from_pick_line(payload_item, pick_line, completion_line)
+
+
+def _index_completion_lines(completion_lines: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for line in completion_lines or []:
+        if not isinstance(line, dict):
+            continue
+        pick_list_item = _as_string(line.get("pick_list_item"))
+        if not pick_list_item:
+            continue
+        indexed[pick_list_item] = line
+    return indexed
 
 
 def _match_pick_line_for_delivery_item(
@@ -772,7 +789,11 @@ def _match_pick_line_for_delivery_item(
     return None
 
 
-def _normalize_delivery_item_from_pick_line(payload_item: dict[str, Any], pick_line: dict[str, Any]) -> None:
+def _normalize_delivery_item_from_pick_line(
+    payload_item: dict[str, Any],
+    pick_line: dict[str, Any],
+    completion_line: dict[str, Any] | None,
+) -> None:
     commercial_uom = _as_string(pick_line.get("uom")) or _as_string(payload_item.get("uom"))
     stock_uom = _as_string(pick_line.get("stock_uom")) or commercial_uom or _as_string(payload_item.get("stock_uom"))
     if not commercial_uom or not stock_uom:
@@ -787,15 +808,23 @@ def _normalize_delivery_item_from_pick_line(payload_item: dict[str, Any], pick_l
     if picked_stock_qty <= 0.0 or conversion_factor <= 0.0:
         return
 
-    rounded_qty = _round_half_up_to_int(picked_stock_qty / conversion_factor)
-    if rounded_qty <= 0:
-        return
+    client_qty = _as_float((completion_line or {}).get("commercial_qty"))
+    commercial_qty = client_qty
+    if commercial_qty <= 0.0:
+        item_code = _as_string(pick_line.get("item_code")) or _as_string(payload_item.get("item_code")) or "unknown item"
+        raise PickListProcessError(
+            f"Delivery Note creation requires explicit commercial_qty for Pick List item {item_code}.",
+            status_code=409,
+            reason_code="invalid_completion_payload",
+            retryable=False,
+            erp_refused=True,
+        )
 
-    payload_item["qty"] = float(rounded_qty)
+    payload_item["qty"] = commercial_qty
     payload_item["uom"] = commercial_uom
     payload_item["stock_uom"] = stock_uom
     payload_item["stock_qty"] = picked_stock_qty
-    payload_item["conversion_factor"] = picked_stock_qty / rounded_qty
+    payload_item["conversion_factor"] = picked_stock_qty / commercial_qty
 
 
 def _is_weight_uom(uom: str | None) -> bool:
@@ -812,12 +841,6 @@ def _is_weight_uom(uom: str | None) -> bool:
         "ק\"ג",
         "קג",
     }
-
-
-def _round_half_up_to_int(value: float) -> int:
-    if value >= 0.0:
-        return int(math.floor(value + 0.5))
-    return int(math.ceil(value - 0.5))
 
 
 def extract_response_detail(response: Any, fallback: str) -> str:

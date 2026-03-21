@@ -36,8 +36,14 @@ class PickListFromSalesOrderCreateResponse(BaseModel):
     has_shortages: bool
 
 
+class PickListCompleteLine(BaseModel):
+    pick_list_item: str = Field(..., min_length=1, max_length=140)
+    commercial_qty: float = 0.0
+
+
 class PickListCompleteRequest(BaseModel):
     create_delivery_note: bool = True
+    lines: list[PickListCompleteLine] = Field(default_factory=list)
 
 
 class PickListCompleteResponse(BaseModel):

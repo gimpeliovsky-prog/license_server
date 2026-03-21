@@ -329,6 +329,7 @@ def run_picklist_complete_job(job_id: uuid.UUID) -> None:
             raise PickListProcessError("Pick List is required", status_code=400)
 
         create_delivery_note = bool(request_meta.get("create_delivery_note", True))
+        completion_lines = request_meta.get("lines")
         ensure_document_submitted(tenant, "Pick List", pick_list_name)
         delivery_note_name = None
         if create_delivery_note:
@@ -336,7 +337,11 @@ def run_picklist_complete_job(job_id: uuid.UUID) -> None:
             if linked_delivery_note_name:
                 delivery_note_name = linked_delivery_note_name
             else:
-                delivery_note_name = create_delivery_note_from_pick_list(tenant, pick_list_name)
+                delivery_note_name = create_delivery_note_from_pick_list(
+                    tenant,
+                    pick_list_name,
+                    completion_lines=completion_lines,
+                )
                 remember_delivery_note_link(db, tenant, pick_list_name, delivery_note_name)
 
         job.status = ProcessJobStatus.succeeded

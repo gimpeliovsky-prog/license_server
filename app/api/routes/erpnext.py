@@ -825,7 +825,12 @@ def complete_picklist_process(
             if linked_delivery_note_name:
                 delivery_note_name = linked_delivery_note_name
             else:
-                delivery_note_name = create_delivery_note_from_pick_list(context.tenant, pick_list_name)
+                completion_lines = payload.model_dump(mode="json").get("lines", [])
+                delivery_note_name = create_delivery_note_from_pick_list(
+                    context.tenant,
+                    pick_list_name,
+                    completion_lines=completion_lines,
+                )
                 remember_delivery_note_link(db, context.tenant, pick_list_name, delivery_note_name)
     except PickListProcessError as exc:
         write_audit_log(
@@ -926,6 +931,7 @@ def complete_picklist_process_async(
         request_meta={
             "pick_list_name": pick_list_name,
             "create_delivery_note": payload.create_delivery_note,
+            "lines": payload.model_dump(mode="json").get("lines", []),
         },
     )
     notify_process_job_runner()

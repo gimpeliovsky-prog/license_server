@@ -1,4 +1,5 @@
 from app.services.picklist_process import (
+    PickListProcessError,
     build_pick_list_preview,
     normalize_delivery_note_payload_quantities,
     sanitize_for_insert,
@@ -113,7 +114,7 @@ def test_sanitize_for_insert_removes_erp_metadata_fields():
     assert "name" not in sanitized["locations"][0]
 
 
-def test_normalize_delivery_note_payload_rounds_box_qty_from_picked_weight():
+def test_normalize_delivery_note_payload_requires_android_commercial_qty_for_box_weight():
     pick_list = {
         "locations": [
             {
@@ -141,12 +142,52 @@ def test_normalize_delivery_note_payload_rounds_box_qty_from_picked_weight():
     }
 
     payload = sanitize_for_insert(draft)
-    normalize_delivery_note_payload_quantities(pick_list, draft, payload)
+    try:
+        normalize_delivery_note_payload_quantities(pick_list, draft, payload)
+        assert False, "expected PickListProcessError"
+    except PickListProcessError as exc:
+        assert exc.reason_code == "invalid_completion_payload"
+
+
+def test_normalize_delivery_note_payload_prefers_android_commercial_qty():
+    pick_list = {
+        "locations": [
+            {
+                "name": "PICK-LINE-3",
+                "item_code": "ITEM-BOX",
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+            }
+        ]
+    }
+    draft = {
+        "items": [
+            {
+                "pick_list_item": "PICK-LINE-3",
+                "item_code": "ITEM-BOX",
+                "qty": 5.4166667,
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "stock_qty": 65,
+            }
+        ]
+    }
+
+    payload = sanitize_for_insert(draft)
+    normalize_delivery_note_payload_quantities(
+        pick_list,
+        draft,
+        payload,
+        completion_lines=[{"pick_list_item": "PICK-LINE-3", "commercial_qty": 6.0}],
+    )
 
     item = payload["items"][0]
-    assert item["qty"] == 5.0
+    assert item["qty"] == 6.0
     assert item["stock_qty"] == 65
-    assert item["conversion_factor"] == 13.0
+    assert round(item["conversion_factor"], 6) == round(65 / 6, 6)
 
 
 def test_normalize_delivery_note_payload_keeps_direct_weight_orders():
