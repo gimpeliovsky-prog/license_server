@@ -39,6 +39,7 @@ from app.schemas import (
     PairingRegisterRequest,
     PairingRegisterResponse,
     ServerCapabilitiesResponse,
+    ServerVersionResponse,
     TenantConfigSnapshot,
     TokenResponse,
 )
@@ -53,12 +54,21 @@ from app.services.permissions import (
     PERMISSION_TENANT_CONFIG_WRITE,
     resolve_app_permissions,
 )
+from app.services.server_version import get_server_version
 from app.utils.time import utcnow
 
 router = APIRouter(tags=["auth"])
 logger = logging.getLogger(__name__)
 settings = get_settings()
 PAIRING_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+@router.get("/version", response_model=ServerVersionResponse)
+def version() -> ServerVersionResponse:
+    return ServerVersionResponse(
+        app_name=settings.app_name,
+        server_version=get_server_version(),
+    )
 
 
 def _tenant_disabled(company_code: str | None, disabled_list: list[str]) -> bool:
@@ -85,6 +95,7 @@ def _build_server_capabilities(context: RequestContext | None = None) -> ServerC
         company_code, settings.box_count_custom_fields_disabled_tenants
     )
     return ServerCapabilitiesResponse(
+        server_version=get_server_version(),
         supports_picklist_process=supports_picklist_process,
         supports_picklist_async_completion=supports_picklist_async_completion,
         supports_delivery_note_creation=supports_delivery_note_creation,
@@ -563,6 +574,7 @@ def _activate(
         issued_at=token_data.issued_at,
         expires_at=token_data.expires_at,
         server_time=now,
+        server_version=get_server_version(),
         erp_url=tenant.erpnext_url,
     )
 
@@ -746,6 +758,7 @@ def activate_pairing(
             issued_at=token_data.issued_at,
             expires_at=token_data.expires_at,
             server_time=now,
+            server_version=get_server_version(),
             erp_url=tenant.erpnext_url,
         )
     except HTTPException as exc:
@@ -871,6 +884,7 @@ def refresh(request: Request, context=Depends(get_request_context)) -> TokenResp
         issued_at=token_data.issued_at,
         expires_at=token_data.expires_at,
         server_time=now,
+        server_version=get_server_version(),
         erp_url=context.tenant.erpnext_url,
     )
 

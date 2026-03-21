@@ -23,6 +23,7 @@ from app.schemas.auth import (
     PairingRegisterRequest,
     PairingRegisterResponse,
     ServerCapabilitiesResponse,
+    ServerVersionResponse,
     TokenResponse,
 )
 from app.schemas.picklist_process import (
@@ -55,6 +56,7 @@ __all__ = [
     "PairingRegisterRequest",
     "PairingRegisterResponse",
     "ServerCapabilitiesResponse",
+    "ServerVersionResponse",
     "TokenResponse",
     "StatusResponse",
     "TenantCreateRequest",

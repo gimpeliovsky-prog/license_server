@@ -12,10 +12,12 @@ from app.config import get_settings
 from app.db import SessionLocal, engine
 from app.services.process_job_runner import start_process_job_runner, stop_process_job_runner
 from app.services.process_jobs import build_process_job_summary
+from app.services.server_version import get_server_version
 from app.web.public_routes import router as public_web_router
 from app.web.routes import router as web_router
 
 settings = get_settings()
+server_version = get_server_version()
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -55,10 +57,12 @@ async def enforce_https(request: Request, call_next):
             response = JSONResponse(status_code=400, content={"detail": "HTTPS required"})
             response.headers["X-Correlation-Id"] = correlation_id
             response.headers["X-Process-Api-Version"] = "1"
+            response.headers["X-License-Server-Version"] = server_version
             return response
     response = await call_next(request)
     response.headers["X-Correlation-Id"] = correlation_id
     response.headers["X-Process-Api-Version"] = "1"
+    response.headers["X-License-Server-Version"] = server_version
     return response
 
 

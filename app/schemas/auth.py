@@ -7,10 +7,17 @@ from app.schemas.tenant_config import TenantConfigSnapshot
 
 class ServerCapabilitiesResponse(BaseModel):
     process_api_version: int = 1
+    server_version: str = "unknown"
     supports_picklist_process: bool = True
     supports_picklist_async_completion: bool = True
     supports_delivery_note_creation: bool = True
     supports_box_count_custom_fields: bool = True
+
+
+class ServerVersionResponse(BaseModel):
+    app_name: str
+    server_version: str
+    process_api_version: int = 1
 
 
 class ActivateRequest(BaseModel):
@@ -57,6 +64,7 @@ class TokenResponse(BaseModel):
     issued_at: datetime
     expires_at: datetime
     server_time: datetime
+    server_version: str = "unknown"
     erp_url: str | None = None
 
 

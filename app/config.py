@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = Field(default="KadimaSoft License Server", alias="APP_NAME")
+    app_version: str = Field(default="", alias="APP_VERSION")
     database_url: str = Field(alias="DATABASE_URL")
     jwt_secret: str = Field(alias="JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
