@@ -1,6 +1,9 @@
 from app.services.picklist_process import (
     PickListProcessError,
+    build_delivery_note_payload_from_pick_list,
     build_pick_list_preview,
+    create_delivery_note_from_pick_list,
+    build_delivery_note_items_from_pick_list,
     normalize_delivery_note_payload_quantities,
     sanitize_for_insert,
 )
@@ -265,3 +268,147 @@ def test_normalize_delivery_note_payload_keeps_direct_weight_orders():
     assert item["qty"] == 7.12
     assert item["stock_qty"] == 7.12
     assert item["conversion_factor"] == 1
+
+
+def test_build_delivery_note_items_from_pick_list_uses_integer_android_box_qty():
+    pick_list = {
+        "locations": [
+            {
+                "name": "PICK-LINE-1",
+                "item_code": "ITEM-BOX",
+                "item_name": "Fish Box",
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+                "warehouse": "WH-1",
+                "sales_order": "SO-1",
+                "sales_order_item": "SOI-1",
+            }
+        ],
+    }
+
+    items = build_delivery_note_items_from_pick_list(
+        pick_list,
+        completion_lines=[{"pick_list_item": "PICK-LINE-1", "commercial_qty": 5.0}],
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item["qty"] == 5.0
+    assert item["uom"] == "Box"
+    assert item["stock_uom"] == "kg"
+    assert round(item["conversion_factor"], 6) == round(65 / 5, 6)
+    assert item["against_sales_order"] == "SO-1"
+    assert item["so_detail"] == "SOI-1"
+
+
+def test_build_delivery_note_payload_from_pick_list_uses_sales_order_defaults():
+    class TenantStub:
+        erpnext_url = "https://erp.example.com"
+        api_key = "key"
+        api_secret = "secret"
+
+    pick_list_doc = {
+        "customer": "CUST-1",
+        "customer_name": "Customer One",
+        "company": "COMP-1",
+        "locations": [
+            {
+                "name": "PICK-LINE-4",
+                "item_code": "ITEM-BOX",
+                "item_name": "Fish Box",
+                "uom": "Box",
+                "stock_uom": "ק\"ג",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+                "warehouse": "WH-1",
+                "sales_order": "SO-1",
+                "sales_order_item": "SOI-1",
+            }
+        ],
+    }
+
+    from unittest.mock import patch
+
+    with patch("app.services.picklist_process.fetch_sales_order_details", return_value={
+        "customer": "CUST-1",
+        "customer_name": "Customer One",
+        "company": "COMP-1",
+        "currency": "ILS",
+        "selling_price_list": "Standard Selling",
+        "set_warehouse": "WH-1",
+    }):
+        payload = build_delivery_note_payload_from_pick_list(
+            TenantStub(),
+            pick_list_doc,
+            completion_lines=[{"pick_list_item": "PICK-LINE-4", "commercial_qty": 5.0}],
+        )
+
+    assert payload["customer"] == "CUST-1"
+    assert payload["currency"] == "ILS"
+    assert payload["selling_price_list"] == "Standard Selling"
+    item = payload["items"][0]
+    assert item["qty"] == 5.0
+    assert item["uom"] == "Box"
+    assert item["stock_uom"] == "ק\"ג"
+    assert round(item["conversion_factor"], 6) == round(65 / 5, 6)
+
+
+def test_create_delivery_note_from_pick_list_posts_single_direct_document():
+    class TenantStub:
+        erpnext_url = "https://erp.example.com"
+        api_key = "key"
+        api_secret = "secret"
+
+    class ResponseStub:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": {"name": "DN-0001"}}
+
+    pick_list_doc = {
+        "customer": "CUST-1",
+        "customer_name": "Customer One",
+        "company": "COMP-1",
+        "locations": [
+            {
+                "name": "PICK-LINE-1",
+                "item_code": "ITEM-BOX",
+                "item_name": "Fish Box",
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+                "warehouse": "WH-1",
+                "sales_order": "SO-1",
+                "sales_order_item": "SOI-1",
+            }
+        ],
+    }
+
+    from unittest.mock import patch
+
+    with patch("app.services.picklist_process.ensure_document_submitted", return_value=pick_list_doc), \
+        patch("app.services.picklist_process.fetch_sales_order_details", return_value={
+            "customer": "CUST-1",
+            "customer_name": "Customer One",
+            "company": "COMP-1",
+            "currency": "ILS",
+            "selling_price_list": "Standard Selling",
+            "set_warehouse": "WH-1",
+        }), \
+        patch("app.services.picklist_process.request_erpnext", return_value=ResponseStub()) as request_mock:
+        name = create_delivery_note_from_pick_list(
+            TenantStub(),
+            "PICK-0001",
+            completion_lines=[{"pick_list_item": "PICK-LINE-1", "commercial_qty": 5.0}],
+        )
+
+    assert name == "DN-0001"
+    _, kwargs = request_mock.call_args
+    assert kwargs["method"] == "POST"
+    assert kwargs["path"] == "/api/resource/Delivery Note"
+    assert kwargs["json_body"]["customer"] == "CUST-1"
+    assert kwargs["json_body"]["items"][0]["qty"] == 5.0

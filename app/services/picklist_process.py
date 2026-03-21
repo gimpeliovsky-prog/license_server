@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 import unicodedata
 from typing import Any
 from urllib.parse import quote
@@ -11,7 +12,6 @@ from app.services.erpnext import ERPNextError, request_erpnext
 
 
 CREATE_PICK_LIST_METHOD_PATH = "/api/method/erpnext.selling.doctype.sales_order.sales_order.create_pick_list"
-CREATE_DELIVERY_NOTE_METHOD_PATH = "/api/method/erpnext.stock.doctype.pick_list.pick_list.create_delivery_note"
 SUBMIT_DOCUMENT_METHOD_PATH = "/api/method/frappe.client.submit"
 ERP_INSERT_STRIP_FIELDS = {
     "name",
@@ -33,8 +33,6 @@ ERP_INSERT_STRIP_FIELDS = {
     "_liked_by",
     "_user_tags",
 }
-
-
 class PickListProcessError(ERPNextError):
     def __init__(
         self,
@@ -333,18 +331,8 @@ def create_delivery_note_from_pick_list(
     completion_lines: list[dict[str, Any]] | None = None,
 ) -> str:
     pick_list_doc = ensure_document_submitted(tenant, "Pick List", pick_list_name)
-    draft_doc = request_delivery_note_draft(tenant, pick_list_name)
-    payload = sanitize_for_insert(draft_doc)
-    if not isinstance(payload, dict) or not payload:
-        raise PickListProcessError(
-            "ERPNext returned an empty Delivery Note draft",
-            status_code=502,
-            reason_code="invalid_erp_response",
-            retryable=True,
-            erp_refused=False,
-        )
-    normalize_delivery_note_payload_quantities(pick_list_doc, draft_doc, payload, completion_lines)
-    ensure_delivery_note_customer(tenant, pick_list_doc, draft_doc, payload)
+    payload = build_delivery_note_payload_from_pick_list(tenant, pick_list_doc, completion_lines)
+    ensure_delivery_note_customer(tenant, pick_list_doc, {}, payload)
 
     response = request_erpnext(
         tenant.erpnext_url,
@@ -380,6 +368,108 @@ def create_delivery_note_from_pick_list(
             erp_refused=False,
         )
     return delivery_note_name
+
+
+def build_delivery_note_payload_from_pick_list(
+    tenant: Tenant,
+    pick_list_doc: dict[str, Any],
+    completion_lines: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    sales_order_name = _resolve_sales_order_name(pick_list_doc)
+    sales_order_doc = fetch_sales_order_details(tenant, sales_order_name) if sales_order_name else {}
+    payload: dict[str, Any] = {
+        "doctype": "Delivery Note",
+        "posting_date": date.today().isoformat(),
+        "customer": _as_string(pick_list_doc.get("customer")) or _as_string(sales_order_doc.get("customer")),
+        "customer_name": _as_string(pick_list_doc.get("customer_name")) or _as_string(sales_order_doc.get("customer_name")),
+        "company": _as_string(pick_list_doc.get("company")) or _as_string(sales_order_doc.get("company")),
+        "currency": _as_string(sales_order_doc.get("currency")),
+        "selling_price_list": _as_string(sales_order_doc.get("selling_price_list")),
+        "set_warehouse": _as_string(sales_order_doc.get("set_warehouse")),
+        "items": build_delivery_note_items_from_pick_list(pick_list_doc, completion_lines),
+    }
+    if not payload["items"]:
+        raise PickListProcessError(
+            "Pick List has no picked items for Delivery Note creation.",
+            status_code=409,
+            reason_code="invalid_completion_payload",
+            retryable=False,
+            erp_refused=True,
+        )
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+def build_delivery_note_items_from_pick_list(
+    pick_list_doc: dict[str, Any],
+    completion_lines: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    completion_by_pick_item = _index_completion_lines(completion_lines)
+    items: list[dict[str, Any]] = []
+    for raw_line in pick_list_doc.get("locations") or []:
+        if not isinstance(raw_line, dict):
+            continue
+        built = build_delivery_note_item_from_pick_line(
+            raw_line,
+            completion_by_pick_item.get(_as_string(raw_line.get("name")) or ""),
+        )
+        if built is not None:
+            items.append(built)
+    return items
+
+
+def build_delivery_note_item_from_pick_line(
+    pick_line: dict[str, Any],
+    completion_line: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    item_code = _as_string(pick_line.get("item_code"))
+    if not item_code:
+        return None
+
+    picked_stock_qty = _as_float(pick_line.get("picked_qty"))
+    if picked_stock_qty <= 0.0:
+        return None
+
+    commercial_uom = _as_string(pick_line.get("uom")) or _as_string(pick_line.get("stock_uom"))
+    stock_uom = _as_string(pick_line.get("stock_uom")) or commercial_uom
+    warehouse = _as_string(pick_line.get("warehouse"))
+    if not commercial_uom or not stock_uom:
+        return None
+
+    conversion_factor = _as_float(pick_line.get("conversion_factor")) or 1.0
+    if commercial_uom.lower() == stock_uom.lower():
+        commercial_qty = picked_stock_qty
+        final_conversion = 1.0 if conversion_factor <= 0.0 else conversion_factor
+    elif not _is_weight_uom(commercial_uom) and _is_weight_uom(stock_uom):
+        commercial_qty = _as_float((completion_line or {}).get("commercial_qty"))
+        if commercial_qty <= 0.0:
+            raise PickListProcessError(
+                f"Delivery Note creation requires explicit commercial_qty for Pick List item {item_code}.",
+                status_code=409,
+                reason_code="invalid_completion_payload",
+                retryable=False,
+                erp_refused=True,
+            )
+        final_conversion = picked_stock_qty / commercial_qty
+    else:
+        commercial_qty = picked_stock_qty / conversion_factor if conversion_factor > 0.0 else picked_stock_qty
+        final_conversion = conversion_factor if conversion_factor > 0.0 else 1.0
+
+    payload = {
+        "item_code": item_code,
+        "item_name": _as_string(pick_line.get("item_name")),
+        "qty": commercial_qty,
+        "uom": commercial_uom,
+        "stock_uom": stock_uom,
+        "conversion_factor": final_conversion,
+        "warehouse": warehouse,
+        "against_sales_order": _as_string(pick_line.get("sales_order")),
+        "so_detail": _as_string(pick_line.get("sales_order_item")),
+        "pick_list_item": _as_string(pick_line.get("name")),
+        "batch_no": _as_string(pick_line.get("batch_no")),
+        "serial_no": _as_string(pick_line.get("serial_no")),
+        "serial_and_batch_bundle": _as_string(pick_line.get("serial_and_batch_bundle")),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
 
 
 def ensure_delivery_note_customer(
@@ -574,63 +664,6 @@ def request_pick_list_draft(tenant: Tenant, sales_order_name: str) -> dict[str, 
             return parsed
     raise PickListProcessError(
         "ERPNext did not return a Pick List draft",
-        status_code=502,
-        reason_code="invalid_erp_response",
-        retryable=True,
-        erp_refused=False,
-    )
-
-
-def request_delivery_note_draft(tenant: Tenant, pick_list_name: str) -> dict[str, Any]:
-    post_response = request_erpnext(
-        tenant.erpnext_url,
-        tenant.api_key,
-        tenant.api_secret,
-        "POST",
-        CREATE_DELIVERY_NOTE_METHOD_PATH,
-        json_body={"source_name": pick_list_name},
-    )
-    response = post_response
-    if post_response.status_code in {404, 405}:
-        response = request_erpnext(
-            tenant.erpnext_url,
-            tenant.api_key,
-            tenant.api_secret,
-            "GET",
-            CREATE_DELIVERY_NOTE_METHOD_PATH,
-            params={"source_name": pick_list_name},
-        )
-
-    if response.status_code >= 400:
-        detail = extract_response_detail(response, "Failed to generate Delivery Note from Pick List")
-        normalized = detail.lower()
-        unsupported = (
-            "allowlist" in normalized
-            or "not whitelisted" in normalized
-            or "not permitted" in normalized
-            or "permissionerror" in normalized
-            or ("method" in normalized and "not found" in normalized)
-            or "has no attribute" in normalized
-            or "does not exist" in normalized
-        )
-        if unsupported:
-            raise PickListProcessError(
-                "ERPNext cannot create a Delivery Note from Pick List. Check method allowlist and user permissions.",
-                status_code=501,
-                reason_code="unsupported_configuration",
-            )
-        raise build_picklist_process_error(detail, response.status_code)
-
-    payload = response.json()
-    message = payload.get("message") if isinstance(payload, dict) else None
-    if isinstance(message, dict):
-        return message
-    if isinstance(message, str):
-        parsed = _try_parse_json_object(message)
-        if parsed is not None:
-            return parsed
-    raise PickListProcessError(
-        "ERPNext did not return a Delivery Note draft",
         status_code=502,
         reason_code="invalid_erp_response",
         retryable=True,
