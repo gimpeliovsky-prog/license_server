@@ -86,65 +86,6 @@ def process_error_detail(
     }
 
 
-def _merge_existing_picklist_locations_for_update(context, name: str, payload: dict) -> dict:
-    locations = payload.get("locations")
-    if not isinstance(locations, list):
-        return payload
-
-    safe_name = quote(name, safe="")
-    response = request_erpnext(
-        context.tenant.erpnext_url,
-        context.tenant.api_key,
-        context.tenant.api_secret,
-        "GET",
-        f"/api/resource/Pick List/{safe_name}",
-    )
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-
-    body = response.json()
-    current = body.get("data") if isinstance(body, dict) else None
-    current_locations = current.get("locations") if isinstance(current, dict) else None
-    if not isinstance(current_locations, list):
-        return payload
-
-    existing_by_name = {}
-    for row in current_locations:
-        if not isinstance(row, dict):
-            continue
-        row_name = str(row.get("name") or "").strip()
-        if row_name:
-            existing_by_name[row_name] = row
-
-    immutable_fields = (
-        "doctype",
-        "item_code",
-        "item_name",
-        "qty",
-        "warehouse",
-        "uom",
-        "stock_uom",
-        "conversion_factor",
-        "stock_qty",
-    )
-
-    for row in locations:
-        if not isinstance(row, dict):
-            continue
-        row_name = str(row.get("name") or "").strip()
-        is_local = bool(row.get("__islocal")) or row_name.startswith("new-")
-        if not row_name or is_local:
-            continue
-        existing = existing_by_name.get(row_name)
-        if not existing:
-            continue
-        for field in immutable_fields:
-            if existing.get(field) is not None:
-                row[field] = existing.get(field)
-
-    return payload
-
-
 def raise_process_http_error(exc: PickListProcessError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.to_detail()) from exc
 
@@ -306,14 +247,13 @@ def update_picklist(
     ensure_method_allowed("PUT", allowlist)
     get_allowed_doctype("Pick List", allowlist)
     try:
-        merged_payload = _merge_existing_picklist_locations_for_update(context, name, payload)
         response = request_erpnext(
             context.tenant.erpnext_url,
             context.tenant.api_key,
             context.tenant.api_secret,
             "PUT",
             f"/api/resource/Pick List/{safe_name}",
-            json_body=merged_payload,
+            json_body=payload,
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
