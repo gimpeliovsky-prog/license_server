@@ -190,6 +190,47 @@ def test_normalize_delivery_note_payload_prefers_android_commercial_qty():
     assert round(item["conversion_factor"], 6) == round(65 / 6, 6)
 
 
+def test_normalize_delivery_note_payload_prefers_android_commercial_qty_for_hebrew_weight_uom():
+    pick_list = {
+        "locations": [
+            {
+                "name": "PICK-LINE-HE-1",
+                "item_code": "ITEM-BOX",
+                "uom": "Box",
+                "stock_uom": "ק\"ג",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+            }
+        ]
+    }
+    draft = {
+        "items": [
+            {
+                "pick_list_item": "PICK-LINE-HE-1",
+                "item_code": "ITEM-BOX",
+                "qty": 5.4166667,
+                "uom": "Box",
+                "stock_uom": "ק\"ג",
+                "conversion_factor": 12,
+                "stock_qty": 65,
+            }
+        ]
+    }
+
+    payload = sanitize_for_insert(draft)
+    normalize_delivery_note_payload_quantities(
+        pick_list,
+        draft,
+        payload,
+        completion_lines=[{"pick_list_item": "PICK-LINE-HE-1", "commercial_qty": 5.0}],
+    )
+
+    item = payload["items"][0]
+    assert item["qty"] == 5.0
+    assert item["stock_qty"] == 65
+    assert round(item["conversion_factor"], 6) == round(65 / 5, 6)
+
+
 def test_normalize_delivery_note_payload_keeps_direct_weight_orders():
     pick_list = {
         "locations": [

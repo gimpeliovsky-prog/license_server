@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import unicodedata
 from typing import Any
 from urllib.parse import quote
 
@@ -845,16 +846,23 @@ def _normalize_delivery_item_from_pick_line(
 
 
 def _is_weight_uom(uom: str | None) -> bool:
-    normalized = (uom or "").strip().lower().replace('"', "").replace(" ", "")
+    normalized = unicodedata.normalize("NFKC", (uom or ""))
+    normalized = normalized.strip().lower().replace('"', "").replace("'", "").replace(" ", "")
     return normalized in {
         "kg",
         "kgs",
         "kilogram",
         "kilograms",
+        "kilo",
+        "kilos",
         "g",
         "gr",
         "gram",
         "grams",
+        "gm",
+        "gms",
+        "קג",
+        "גרם",
         "ק\"ג",
         "קג",
     }
