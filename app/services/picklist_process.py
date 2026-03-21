@@ -252,12 +252,11 @@ def preview_pick_list_from_sales_order(tenant: Tenant, sales_order_name: str) ->
         raise PickListProcessError("Sales Order is required", status_code=400, reason_code="sales_order_required")
     sales_order_doc = fetch_sales_order_details(tenant, normalized_name)
     if _as_int(sales_order_doc.get("docstatus")) != 1:
-        raise PickListProcessError(
-            "Sales Order must be submitted in ERPNext before Pick List creation.",
-            status_code=409,
-            reason_code="source_not_submitted",
-            retryable=False,
-            erp_refused=True,
+        return PickListPreview(
+            sales_order_name=normalized_name,
+            draft_doc={},
+            shortages=[],
+            allocated_line_count=_count_pending_sales_order_lines(sales_order_doc),
         )
     draft_doc = request_pick_list_draft(tenant, normalized_name)
     return build_pick_list_preview(sales_order_doc, draft_doc, normalized_name)
@@ -308,6 +307,24 @@ def create_pick_list_from_preview(tenant: Tenant, preview: PickListPreview) -> s
             erp_refused=False,
         )
     return pick_list_name
+
+
+def _count_pending_sales_order_lines(sales_order_doc: dict[str, Any]) -> int:
+    count = 0
+    for raw_line in sales_order_doc.get("items") or []:
+        if not isinstance(raw_line, dict):
+            continue
+        if _as_int(raw_line.get("delivered_by_supplier")) == 1:
+            continue
+        ordered_qty = _as_float(raw_line.get("qty"))
+        delivered_qty = _as_float(raw_line.get("delivered_qty"))
+        picked_qty = _as_float(raw_line.get("picked_qty"))
+        conversion_factor = _as_float(raw_line.get("conversion_factor")) or 1.0
+        already_picked = picked_qty / conversion_factor if conversion_factor > 0 else 0.0
+        pending_qty = max(ordered_qty - max(already_picked, delivered_qty), 0.0)
+        if pending_qty > 0:
+            count += 1
+    return count
 
 def create_delivery_note_from_pick_list(
     tenant: Tenant,

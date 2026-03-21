@@ -704,6 +704,7 @@ def create_picklist_from_sales_order_process(
                 request_hash=request_hash,
                 payload=response_payload,
             )
+        ensure_document_submitted(context.tenant, "Sales Order", payload.sales_order_name)
         preview = preview_pick_list_from_sales_order(context.tenant, payload.sales_order_name)
         if preview.allocated_line_count <= 0:
             raise HTTPException(
