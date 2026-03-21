@@ -10,6 +10,11 @@ BACKUP_DIR="${BACKUP_DIR:-./backups}"
 READINESS_PATH="${READINESS_PATH:-/health/ready}"
 READINESS_RETRIES="${READINESS_RETRIES:-20}"
 READINESS_DELAY_SECONDS="${READINESS_DELAY_SECONDS:-3}"
+APP_VERSION="${APP_VERSION:-$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')}"
+
+export APP_VERSION
+
+echo "Deploying license server version: ${APP_VERSION}"
 
 echo "Creating PostgreSQL backup..."
 COMPOSE_ARGS="${COMPOSE_ARGS}" DB_SERVICE="${DB_SERVICE}" BACKUP_DIR="${BACKUP_DIR}" sh ./scripts/docker_backup_postgres.sh

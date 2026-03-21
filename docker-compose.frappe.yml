@@ -27,6 +27,7 @@ services:
       - .env
     working_dir: /app
     environment:
+      APP_VERSION: ${APP_VERSION:-unknown}
       # IMPORTANT: inside Docker this must be the service name, NOT localhost
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
 
@@ -81,6 +82,7 @@ services:
       - .env
     working_dir: /app
     environment:
+      APP_VERSION: ${APP_VERSION:-unknown}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
       ALLOW_INSECURE_HTTP: "true"
       PYTHONPATH: /app
@@ -108,6 +110,7 @@ services:
       - .env
     working_dir: /app
     environment:
+      APP_VERSION: ${APP_VERSION:-unknown}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-license_server}:${POSTGRES_PASSWORD:-change_me}@license_db:5432/${POSTGRES_DB:-license_server}
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
