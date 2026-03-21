@@ -1,4 +1,8 @@
-from app.services.picklist_process import build_pick_list_preview, sanitize_for_insert
+from app.services.picklist_process import (
+    build_pick_list_preview,
+    normalize_delivery_note_payload_quantities,
+    sanitize_for_insert,
+)
 
 
 def test_build_pick_list_preview_reports_shortage_for_unallocated_qty():
@@ -107,3 +111,75 @@ def test_sanitize_for_insert_removes_erp_metadata_fields():
     assert sanitized["customer"] == "Customer A"
     assert sanitized["locations"][0]["item_code"] == "ITEM-001"
     assert "name" not in sanitized["locations"][0]
+
+
+def test_normalize_delivery_note_payload_rounds_box_qty_from_picked_weight():
+    pick_list = {
+        "locations": [
+            {
+                "name": "PICK-LINE-1",
+                "item_code": "ITEM-BOX",
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "picked_qty": 65,
+            }
+        ]
+    }
+    draft = {
+        "items": [
+            {
+                "pick_list_item": "PICK-LINE-1",
+                "item_code": "ITEM-BOX",
+                "qty": 5.4166667,
+                "uom": "Box",
+                "stock_uom": "kg",
+                "conversion_factor": 12,
+                "stock_qty": 65,
+            }
+        ]
+    }
+
+    payload = sanitize_for_insert(draft)
+    normalize_delivery_note_payload_quantities(pick_list, draft, payload)
+
+    item = payload["items"][0]
+    assert item["qty"] == 5.0
+    assert item["stock_qty"] == 65
+    assert item["conversion_factor"] == 13.0
+
+
+def test_normalize_delivery_note_payload_keeps_direct_weight_orders():
+    pick_list = {
+        "locations": [
+            {
+                "name": "PICK-LINE-2",
+                "item_code": "ITEM-KG",
+                "uom": "kg",
+                "stock_uom": "kg",
+                "conversion_factor": 1,
+                "picked_qty": 7.12,
+            }
+        ]
+    }
+    draft = {
+        "items": [
+            {
+                "pick_list_item": "PICK-LINE-2",
+                "item_code": "ITEM-KG",
+                "qty": 7.12,
+                "uom": "kg",
+                "stock_uom": "kg",
+                "conversion_factor": 1,
+                "stock_qty": 7.12,
+            }
+        ]
+    }
+
+    payload = sanitize_for_insert(draft)
+    normalize_delivery_note_payload_quantities(pick_list, draft, payload)
+
+    item = payload["items"][0]
+    assert item["qty"] == 7.12
+    assert item["stock_qty"] == 7.12
+    assert item["conversion_factor"] == 1
