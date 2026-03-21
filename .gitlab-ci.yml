@@ -1,9 +1,8 @@
 stages:
-  - pull_code
   - deploy
 
 variables:
-  GIT_STRATEGY: none
+  GIT_STRATEGY: fetch
   LICENSE_SERVER_DIR: /opt/erp/license_server
   COMPOSE_ARGS: -f docker-compose.frappe.yml
   DB_SERVICE: license_db
@@ -15,23 +14,14 @@ variables:
   READINESS_RETRIES: "20"
   READINESS_DELAY_SECONDS: "3"
 
-pull_code:
-  stage: pull_code
-  tags:
-    - deploy_lic_server
-  script:
-    - echo "Updating repository..."
-    - cd "$LICENSE_SERVER_DIR"
-    - git fetch origin
-    - git reset --hard origin/main
-
 deploy_app:
   stage: deploy
   tags:
     - deploy_lic_server
-  needs:
-    - job: pull_code
   script:
-    - echo "Starting deploy..."
+    - echo "Deploying commit ${CI_COMMIT_SHA:-unknown} (${CI_COMMIT_SHORT_SHA:-unknown})"
+    - mkdir -p "$LICENSE_SERVER_DIR"
+    - rsync -a --delete --exclude '.git' --exclude '.env' --exclude 'backups/' --exclude 'nginx/certs/' --exclude 'nginx/letsencrypt/' --exclude 'nginx/www/' ./ "$LICENSE_SERVER_DIR"/
     - cd "$LICENSE_SERVER_DIR"
+    - export APP_VERSION="${CI_COMMIT_SHORT_SHA:-unknown}"
     - sh ./scripts/docker_deploy.sh
