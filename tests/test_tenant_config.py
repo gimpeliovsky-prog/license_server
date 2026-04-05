@@ -28,7 +28,11 @@ def _build_context(*permissions: str) -> RequestContext:
         tenant_config={
             "access": {"client_profile": "STANDARD"},
             "barcodes": [{"id": "rule-1", "name": "Rule 1"}],
-            "scales": {"scale_enabled": True, "scale_unit": "kg", "hosts": [{"host": "10.0.0.10"}]},
+            "scales": {
+                "scale_enabled": True,
+                "scale_unit": "kg",
+                "hosts": [{"number": "SCL-01", "host": "10.0.0.10", "note": "Dock"}],
+            },
             "fulfillment_rules": [{"item_code": "ITEM-1", "mode": "FIXED_PACK"}],
         },
         tenant_config_revision="rev-1",
@@ -65,6 +69,7 @@ def test_get_tenant_config_returns_snapshot():
     assert snapshot.updated_by == "admin@example.com"
     assert snapshot.payload.access.client_profile == "STANDARD"
     assert snapshot.payload.barcodes[0].id == "rule-1"
+    assert snapshot.payload.scales.hosts[0].number == "SCL-01"
     assert snapshot.payload.scales.hosts[0].host == "10.0.0.10"
     assert "fulfillment_rules" not in snapshot.payload.model_dump(mode="python")
 
@@ -140,3 +145,73 @@ def test_tenant_config_snapshot_rejects_invalid_barcode_payload_shape():
                 "barcodes": [123],
             }
         )
+
+
+def test_tenant_config_snapshot_rejects_invalid_scale_host():
+    with pytest.raises(ValidationError) as exc:
+        TenantConfigSnapshot(
+            payload={
+                "scales": {
+                    "scale_enabled": True,
+                    "scale_unit": "kg",
+                    "hosts": [{"host": "10.0.0"}],
+                }
+            }
+        )
+
+    assert "Scale host" in str(exc.value)
+
+
+def test_tenant_config_snapshot_normalizes_and_deduplicates_scale_hosts():
+    snapshot = TenantConfigSnapshot(
+        payload={
+            "scales": {
+                "scale_enabled": True,
+                "scale_unit": "KG",
+                "hosts": [
+                    {"number": "A-01", "host": " http://10.0.0.10:8080/ ", "note": " Dock "},
+                    {"number": "A-01", "host": "10.0.0.10:8080", "note": "Duplicate"},
+                    {"number": "A-02", "host": "10.0.0.11"},
+                ],
+            }
+        }
+    )
+
+    assert snapshot.payload.scales.scale_unit == "kg"
+    assert [host.host for host in snapshot.payload.scales.hosts] == ["10.0.0.10:8080", "10.0.0.11"]
+    assert [host.number for host in snapshot.payload.scales.hosts] == ["A-01", "A-02"]
+    assert snapshot.payload.scales.hosts[0].note == "Dock"
+
+
+def test_put_tenant_config_rejects_invalid_scale_host():
+    context = _build_context("tenant_config.write")
+    db = MagicMock()
+
+    with pytest.raises(ValidationError):
+        payload = TenantConfigSnapshot(
+            config_revision="rev-1",
+            payload={
+                "scales": {
+                    "scale_enabled": True,
+                    "scale_unit": "kg",
+                    "hosts": [{"number": "A-01", "host": "192.168.1"}],
+                }
+            },
+        )
+        put_tenant_config(payload=payload, context=context, db=db)
+
+    db.commit.assert_not_called()
+
+
+def test_tenant_config_snapshot_reads_legacy_scale_shape():
+    snapshot = TenantConfigSnapshot(
+        payload={
+            "scales": {
+                "hosts": [{"host": "10.0.0.10", "name": "Old note"}],
+            }
+        }
+    )
+
+    assert snapshot.payload.scales.hosts[0].number == "10.0.0.10"
+    assert snapshot.payload.scales.hosts[0].host == "10.0.0.10"
+    assert snapshot.payload.scales.hosts[0].note == "Old note"
