@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import admin_router, auth_router, erpnext_router, ota_router, status_router
+from app.api.routes import ai_agent, admin_router, auth_router, erpnext_router, ota_router, status_router
 from app.config import get_settings
 from app.db import SessionLocal, engine
 from app.services.process_job_runner import start_process_job_runner, stop_process_job_runner
@@ -72,6 +72,7 @@ app.include_router(status_router)
 app.include_router(ota_router)
 app.include_router(ota_router, prefix="/api", include_in_schema=False)
 app.include_router(erpnext_router)
+app.include_router(ai_agent.router, prefix="/api/v1")
 app.include_router(admin_router)
 app.include_router(public_web_router)
 app.include_router(web_router)

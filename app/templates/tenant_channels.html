@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Tenant Channels: {{ tenant.company_code }}</h1>
+<p class="muted">Each channel is optional. A tenant can use only Telegram, only WhatsApp, only Webchat, or any combination of them.</p>
+
+<div class="panel">
+  <form method="post" action="/admin-ui/tenant/channels">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h2>Telegram</h2>
+    <p class="muted">Leave Telegram fields empty if this tenant does not use Telegram.</p>
+    <label>Bot Token</label>
+    <input type="password" name="tg_bot_token" value="{{ channel.tg_bot_token if channel else '' }}" placeholder="123456:ABCDEF...">
+    <label>Webhook Secret</label>
+    <input type="password" name="tg_webhook_secret" value="{{ channel.tg_webhook_secret if channel else '' }}" placeholder="optional; auto-generated if empty">
+    <label>Phone Number</label>
+    <input type="text" name="tg_phone_number" value="{{ channel.tg_phone_number if channel else '' }}" placeholder="+79111234567">
+    <p class="muted">Bot username: {{ channel.tg_bot_username if channel and channel.tg_bot_username else '-' }}</p>
+
+    <h2>WhatsApp (Twilio)</h2>
+    <p class="muted">Leave WhatsApp fields empty if this tenant does not use WhatsApp.</p>
+    <label>Account SID</label>
+    <input type="text" name="wa_account_sid" value="{{ channel.wa_account_sid if channel else '' }}">
+    <label>Auth Token</label>
+    <input type="password" name="wa_auth_token" value="{{ channel.wa_auth_token if channel else '' }}">
+    <label>Phone Number</label>
+    <input type="text" name="wa_number" value="{{ channel.wa_number if channel else '' }}" placeholder="+79111234567">
+
+    <h2>Webchat</h2>
+    <p class="muted">Enable Webchat only if this tenant needs the website widget.</p>
+    <label><input type="checkbox" name="webchat_enabled" value="1" {% if channel and channel.webchat_enabled %}checked{% endif %}> Enable webchat</label>
+    <label>Widget Token</label>
+    <input type="text" name="webchat_widget_token" value="{{ channel.webchat_widget_token if channel and channel.webchat_widget_token else '' }}" placeholder="signed-or-random-widget-token">
+    <label>Allowed origins (JSON array)</label>
+    <textarea name="webchat_allowed_origins" rows="3" placeholder='["https://client-site.com"]'>{{ channel.webchat_allowed_origins if channel and channel.webchat_allowed_origins else '' }}</textarea>
+    <p class="muted">Webchat should prefer widget token routing. Company code fallback remains for backward compatibility.</p>
+
+    <h2>AI</h2>
+    <label>System Prompt Override</label>
+    <textarea name="ai_system_prompt" rows="5" placeholder="Optional tenant-specific AI prompt">{{ channel.ai_system_prompt if channel and channel.ai_system_prompt else '' }}</textarea>
+    <label>Language</label>
+    <input type="text" name="ai_language" value="{{ channel.ai_language if channel and channel.ai_language else 'ru' }}" maxlength="8">
+
+    <h2>AI Policy</h2>
+    <p class="muted">This policy is stored in tenant_config.ai and returned to AI Sales Manager by License Server.</p>
+    <label><input type="checkbox" name="ai_allow_invoice" value="1" {% if ai_config.allow_invoice %}checked{% endif %}> Allow invoice creation</label>
+    <label><input type="checkbox" name="ai_allow_license_ops" value="1" {% if ai_config.allow_license_ops %}checked{% endif %}> Allow license and subscription operations</label>
+    <label><input type="checkbox" name="ai_allow_discount_promises" value="1" {% if ai_config.allow_discount_promises %}checked{% endif %}> Allow discount promises</label>
+    <label><input type="checkbox" name="ai_allow_free_text_catalog_answers" value="1" {% if ai_config.allow_free_text_catalog_answers %}checked{% endif %}> Allow free-text catalog answers</label>
+
+    <h2>Handoff Rules</h2>
+    <label><input type="checkbox" name="ai_handoff_enabled" value="1" {% if ai_config.handoff_rules.enabled %}checked{% endif %}> Enable AI handoff rules</label>
+    <label>Clarification failure limit</label>
+    <input type="number" name="ai_clarification_failure_limit" min="1" value="{{ ai_config.handoff_rules.clarification_failure_limit }}">
+    <label><input type="checkbox" name="ai_allow_customer_requested_handoff" value="1" {% if ai_config.handoff_rules.allow_customer_requested_handoff %}checked{% endif %}> Allow customer-requested handoff</label>
+    <label><input type="checkbox" name="ai_frustrated_customer_handoff" value="1" {% if ai_config.handoff_rules.frustrated_customer_handoff %}checked{% endif %}> Handoff frustrated customers</label>
+
+    <h2>Handoff Target</h2>
+    <label>Target type</label>
+    <select name="ai_handoff_target_type">
+      <option value="none" {% if ai_config.handoff_target.target_type == "none" %}selected{% endif %}>None</option>
+      <option value="dashboard" {% if ai_config.handoff_target.target_type == "dashboard" %}selected{% endif %}>Dashboard</option>
+      <option value="email" {% if ai_config.handoff_target.target_type == "email" %}selected{% endif %}>Email</option>
+      <option value="telegram" {% if ai_config.handoff_target.target_type == "telegram" %}selected{% endif %}>Telegram</option>
+    </select>
+    <label>Destination</label>
+    <input type="text" name="ai_handoff_target_destination" value="{{ ai_config.handoff_target.destination or '' }}" placeholder="email, operator chat id, or dashboard queue name">
+    <label>Instructions</label>
+    <textarea name="ai_handoff_target_instructions" rows="3" placeholder="Internal instructions for the human operator">{{ ai_config.handoff_target.instructions or '' }}</textarea>
+
+    <h2>Allowed Tools</h2>
+    <label>Allowed tools (JSON array)</label>
+    <textarea name="ai_allowed_tools" rows="4" placeholder='["get_product_catalog","register_buyer","get_buyer_sales_history","create_sales_order"]'>{{ ai_allowed_tools_json }}</textarea>
+    <p class="muted">Leave empty array to rely on server defaults. Known tools: get_product_catalog, register_buyer, get_buyer_sales_history, create_sales_order, update_sales_order, send_sales_order_pdf, create_invoice, create_license, extend_subscription.</p>
+
+    <h2>Behavior Classification</h2>
+    <label>Behavior rules (JSON array)</label>
+    <textarea name="ai_behavior_rules_json" rows="10" placeholder='[{"match_type":"contains","pattern":"discount","target":"price_sensitive","confidence":0.85}]'>{{ ai_behavior_rules_json }}</textarea>
+    <p class="muted">Optional ordered overrides. Supported match types: regex, contains, exact. Known behavior targets: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal.</p>
+
+    <h2>Intent Classification</h2>
+    <label>Intent rules (JSON array)</label>
+    <textarea name="ai_intent_rules_json" rows="10" placeholder='[{"match_type":"contains","pattern":"manager","target":"human_handoff","confidence":0.92}]'>{{ ai_intent_rules_json }}</textarea>
+    <p class="muted">Optional ordered overrides. Known intent targets: human_handoff, service_request, add_to_order, confirm_order, order_detail, browse_catalog, find_product, low_signal.</p>
+
+    <h2>Prompt Overrides</h2>
+    <label>Prompt overrides (JSON object)</label>
+    <textarea name="ai_prompt_overrides_json" rows="16" placeholder='{"stage_prompts":{"discover":["Prefer two options instead of three."]},"handoff_messages":{"ru":"Передаю менеджеру."}}'>{{ ai_prompt_overrides_json }}</textarea>
+    <p class="muted">Optional append-only overrides for core_policy, language_policy, catalog_policy, order_policy, service_policy, stage_prompts, behavior_prompts, channel_prompts, handoff_messages.</p>
+
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-block">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Connection tests</h2>
+  <form method="post" action="/admin-ui/tenant/channels/tg/test" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="password" name="tg_bot_token" placeholder="Telegram token" value="{{ channel.tg_bot_token if channel else '' }}">
+    <button type="submit" class="button-compact">Test Telegram</button>
+  </form>
+
+  <form method="post" action="/admin-ui/tenant/channels/wa/test" class="inline" style="margin-top: 10px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="wa_account_sid" placeholder="Twilio SID" value="{{ channel.wa_account_sid if channel else '' }}">
+    <input type="password" name="wa_auth_token" placeholder="Twilio token" value="{{ channel.wa_auth_token if channel else '' }}">
+    <button type="submit" class="button-compact">Test WhatsApp</button>
+  </form>
+</div>
+{% endblock %}

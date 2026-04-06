@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="panel">
+  <div class="inline" style="justify-content: space-between; align-items: start; flex-wrap: wrap;">
+    <div>
+      <h1 style="margin-bottom: 6px;">AI Conversation</h1>
+      <div class="muted">{{ conversation.tenant_company_code }} · {{ conversation.channel_type }} · {{ conversation.status }}</div>
+    </div>
+    <a class="button-pill" href="/admin-ui/ai-conversations">Back to list</a>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Context</h2>
+  <div class="grid-2">
+    <div>
+      <strong>Customer</strong>
+      <div>{{ conversation.buyer_name or "-" }}</div>
+      <div class="muted">{{ conversation.erp_customer_id or "-" }}</div>
+      <div class="muted">{{ conversation.buyer_phone or "-" }}</div>
+    </div>
+    <div>
+      <strong>Session</strong>
+      <div style="font-family: monospace;">{{ conversation.session_id }}</div>
+      <div class="muted">{{ conversation.channel_user_id }}</div>
+    </div>
+    <div>
+      <strong>Timing</strong>
+      <div>Created: {{ conversation.created_at.isoformat() if conversation.created_at else "-" }}</div>
+      <div>First customer msg: {{ conversation.first_customer_message_at.isoformat() if conversation.first_customer_message_at else "-" }}</div>
+      <div>Last message: {{ conversation.last_message_at.isoformat() if conversation.last_message_at else "-" }}</div>
+    </div>
+    <div>
+      <strong>Flow</strong>
+      <div>Status: {{ conversation.status }}</div>
+      <div>Last stage: {{ conversation.last_stage or "-" }}</div>
+      <div>Summary: {{ conversation.summary or "-" }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Transcript</h2>
+  {% if messages %}
+  <div style="display: grid; gap: 12px;">
+    {% for message in messages %}
+    <div style="border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: {% if message.role == 'user' %}#f7fbff{% elif message.role == 'assistant' %}#ffffff{% else %}#f8f8f8{% endif %};">
+      <div class="inline" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
+        <div>
+          <strong>{{ message.role }}</strong>
+          <span class="muted">· {{ message.message_type }}</span>
+          {% if message.tool_name %}<span class="muted">· {{ message.tool_name }}</span>{% endif %}
+        </div>
+        <div class="muted" style="font-family: monospace;">{{ message.created_at.isoformat() if message.created_at else "-" }}</div>
+      </div>
+      <div class="muted" style="margin-top: 4px;">
+        stage={{ message.stage or "-" }} · behavior={{ message.behavior_class or "-" }} · id={{ message.message_id }}
+      </div>
+      {% if message.content %}
+      <pre style="white-space: pre-wrap; margin: 12px 0 0; font-family: inherit;">{{ message.content }}</pre>
+      {% endif %}
+      {% if message.payload_json %}
+      <details style="margin-top: 10px;">
+        <summary class="muted">Payload</summary>
+        <pre style="white-space: pre-wrap;">{{ message.payload_json | tojson(indent=2) }}</pre>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">No transcript messages stored for this conversation.</p>
+  {% endif %}
+</div>
+{% endblock %}

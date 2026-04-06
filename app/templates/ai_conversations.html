@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>AI Conversations</h1>
+
+<div class="panel">
+  <form method="get" action="/admin-ui/ai-conversations" class="inline" style="flex-wrap: wrap; align-items: end;">
+    <div>
+      <label for="tenant">Tenant</label>
+      <input id="tenant" type="text" name="tenant" value="{{ selected_tenant }}" placeholder="company_code">
+    </div>
+    <div>
+      <label for="channel">Channel</label>
+      <select id="channel" name="channel">
+        <option value="" {% if not selected_channel %}selected{% endif %}>All</option>
+        <option value="telegram" {% if selected_channel == "telegram" %}selected{% endif %}>Telegram</option>
+        <option value="whatsapp" {% if selected_channel == "whatsapp" %}selected{% endif %}>WhatsApp</option>
+        <option value="webchat" {% if selected_channel == "webchat" %}selected{% endif %}>Webchat</option>
+      </select>
+    </div>
+    <div style="min-width: 260px;">
+      <label for="q">Search</label>
+      <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="session, customer, phone, channel user">
+    </div>
+    <div>
+      <button type="submit" class="button-compact">Apply</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Sessions</h2>
+  {% if rows %}
+  <div class="table-scroll">
+    <table class="table-plain-header">
+      <thead>
+        <tr>
+          <th>Last message</th>
+          <th>Tenant</th>
+          <th>Customer</th>
+          <th>Channel</th>
+          <th>Session</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td style="font-family: monospace;">{{ row.last_message_at.isoformat() if row.last_message_at else "-" }}</td>
+          <td>{{ row.tenant_company_code }}</td>
+          <td>
+            <div>{{ row.buyer_name or "-" }}</div>
+            <div class="muted">{{ row.erp_customer_id or "-" }}</div>
+            <div class="muted">{{ row.buyer_phone or "-" }}</div>
+          </td>
+          <td>
+            <div>{{ row.channel_type }}</div>
+            <div class="muted">{{ row.channel_user_id }}</div>
+          </td>
+          <td style="font-family: monospace;">{{ row.session_id }}</td>
+          <td>
+            <div>{{ row.status }}</div>
+            <div class="muted">{{ row.last_stage or "-" }}</div>
+          </td>
+          <td><a class="button-pill" href="/admin-ui/ai-conversations/{{ row.id }}">Open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No AI conversations found.</p>
+  {% endif %}
+</div>
+{% endblock %}

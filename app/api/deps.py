@@ -73,6 +73,14 @@ def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Admin token invalid")
 
 
+def require_ai_agent(x_ai_agent_token: str | None = Header(default=None)) -> None:
+    token = getattr(settings, "ai_agent_token", "")
+    if not token:
+        raise HTTPException(status_code=503, detail="AI agent token not configured")
+    if not x_ai_agent_token or not hmac.compare_digest(x_ai_agent_token, token):
+        raise HTTPException(status_code=401, detail="AI agent token invalid")
+
+
 def get_token_data(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> TokenData:

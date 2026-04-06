@@ -4,6 +4,7 @@ import secrets
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -15,6 +16,8 @@ from app.api.routes.admin import diagnose_license as api_diagnose_license
 from app.api.deps import get_client_ip, get_db
 from app.config import get_settings
 from app.models import (
+    AIConversation,
+    AIConversationMessage,
     AuditLog,
     Device,
     ERPAllowlistEntry,
@@ -24,6 +27,7 @@ from app.models import (
     OTAAccess,
     ProcessJob,
     Tenant,
+    TenantChannel,
     TenantStatus,
 )
 from app.models.firmware import DeviceOTALog, Firmware
@@ -58,7 +62,7 @@ from app.services.process_jobs import (
 from app.services.process_job_runner import notify_process_job_runner
 from app.services.tenant_cleanup import delete_tenant_with_dependencies
 from app.schemas.admin import LicenseDiagnosticsRequest
-from app.schemas.tenant_config import TenantConfigSnapshot
+from app.schemas.tenant_config import TenantConfigPayload, TenantConfigSnapshot
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
@@ -106,6 +110,66 @@ def normalize_license_description(value: str | None) -> str | None:
     return normalized or None
 
 
+def normalize_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def normalize_json_array(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return json.dumps([str(item).strip() for item in parsed if str(item).strip()], ensure_ascii=False)
+
+
+def parse_json_array(value: str | None) -> list[str] | None:
+    if value is None:
+        return []
+    normalized = value.strip()
+    if not normalized:
+        return []
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def parse_json_object(value: str | None) -> dict | list | None:
+    if value is None:
+        return {}
+    normalized = value.strip()
+    if not normalized:
+        return {}
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, (dict, list)):
+        return None
+    return parsed
+
+
 def _safe_json_dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
@@ -126,6 +190,41 @@ def _default_tenant_config_payload() -> dict:
             "scale_unit": "kg",
             "hosts": [],
         },
+        "ai": {
+            "allow_invoice": True,
+            "allow_license_ops": True,
+            "allow_discount_promises": False,
+            "allow_free_text_catalog_answers": True,
+            "handoff_rules": {
+                "enabled": True,
+                "clarification_failure_limit": 2,
+                "allow_customer_requested_handoff": True,
+                "frustrated_customer_handoff": True,
+            },
+            "handoff_target": {
+                "target_type": "none",
+                "destination": None,
+                "instructions": None,
+            },
+            "tools_policy": {
+                "allowed_tools": [],
+            },
+            "classification": {
+                "behavior_rules": [],
+                "intent_rules": [],
+            },
+            "prompt_overrides": {
+                "core_policy": [],
+                "language_policy": [],
+                "catalog_policy": [],
+                "order_policy": [],
+                "service_policy": [],
+                "stage_prompts": {},
+                "behavior_prompts": {},
+                "channel_prompts": {},
+                "handoff_messages": {},
+            },
+        },
     }
 
 
@@ -145,6 +244,34 @@ def build_tenant_config_snapshot(tenant: Tenant) -> TenantConfigSnapshot:
         merged_payload["scales"] = {**merged_payload["scales"], **payload["scales"]}
     if isinstance(payload.get("barcodes"), list):
         merged_payload["barcodes"] = payload["barcodes"]
+    if isinstance(payload.get("ai"), dict):
+        merged_payload["ai"] = {**merged_payload["ai"], **payload["ai"]}
+        ai_payload = payload["ai"]
+        if isinstance(ai_payload.get("handoff_rules"), dict):
+            merged_payload["ai"]["handoff_rules"] = {
+                **merged_payload["ai"]["handoff_rules"],
+                **ai_payload["handoff_rules"],
+            }
+        if isinstance(ai_payload.get("handoff_target"), dict):
+            merged_payload["ai"]["handoff_target"] = {
+                **merged_payload["ai"]["handoff_target"],
+                **ai_payload["handoff_target"],
+            }
+        if isinstance(ai_payload.get("tools_policy"), dict):
+            merged_payload["ai"]["tools_policy"] = {
+                **merged_payload["ai"]["tools_policy"],
+                **ai_payload["tools_policy"],
+            }
+        if isinstance(ai_payload.get("classification"), dict):
+            merged_payload["ai"]["classification"] = {
+                **merged_payload["ai"]["classification"],
+                **ai_payload["classification"],
+            }
+        if isinstance(ai_payload.get("prompt_overrides"), dict):
+            merged_payload["ai"]["prompt_overrides"] = {
+                **merged_payload["ai"]["prompt_overrides"],
+                **ai_payload["prompt_overrides"],
+            }
 
     return TenantConfigSnapshot(
         config_revision=(tenant.tenant_config_revision or "").strip(),
@@ -303,6 +430,17 @@ def get_tenant_or_none(db: Session, company_code: str) -> Tenant | None:
     return db.query(Tenant).filter(Tenant.company_code == company_code).first()
 
 
+def _session_tenant(db: Session, request: Request) -> Tenant | None:
+    tenant_id = str(request.session.get("tenant_id") or "").strip()
+    if not tenant_id:
+        return None
+    try:
+        tenant_uuid = uuid.UUID(tenant_id)
+    except ValueError:
+        return None
+    return db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+
+
 def build_admin_context(
     request: Request,
     title: str,
@@ -323,6 +461,7 @@ def build_admin_context(
 
 LOG_SCOPE_OPTIONS = {"auth", "diagnostics", "all"}
 LOG_OUTCOME_OPTIONS = {"all", "failed", "success"}
+AI_LOG_SCOPE_OPTIONS = {"handoffs", "events", "all"}
 AUTH_LOG_ACTIONS = {
     "activate",
     "activate_failed",
@@ -332,6 +471,7 @@ AUTH_LOG_ACTIONS = {
     "validate_license_failed",
 }
 DIAGNOSTICS_LOG_ACTIONS = {"license_diagnostics"}
+AI_AUDIT_ACTIONS = {"ai_handoff", "ai_conversation_event"}
 ACTION_LABELS = {
     "activate": "Activate",
     "activate_failed": "Activate",
@@ -359,6 +499,11 @@ def normalize_log_scope(value: str | None) -> str:
 def normalize_log_outcome(value: str | None) -> str:
     normalized = str(value or "all").strip().lower()
     return normalized if normalized in LOG_OUTCOME_OPTIONS else "all"
+
+
+def normalize_ai_log_scope(value: str | None) -> str:
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in AI_LOG_SCOPE_OPTIONS else "all"
 
 def parse_auto_refresh(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -445,6 +590,172 @@ def fetch_license_event_logs(
             }
         )
     return rows
+
+
+def fetch_ai_audit_logs(
+    db: Session,
+    *,
+    window_hours: int,
+    scope: str,
+    limit: int = 200,
+) -> list[dict]:
+    if scope == "handoffs":
+        actions = {"ai_handoff"}
+    elif scope == "events":
+        actions = {"ai_conversation_event"}
+    else:
+        actions = AI_AUDIT_ACTIONS
+
+    since_time = utcnow() - timedelta(hours=window_hours)
+    records = (
+        db.query(AuditLog)
+        .filter(AuditLog.created_at >= since_time)
+        .filter(AuditLog.action.in_(sorted(actions)))
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    tenant_ids = list({record.tenant_id for record in records if record.tenant_id})
+    tenant_codes: dict[uuid.UUID, str] = {}
+    if tenant_ids:
+        tenants = db.query(Tenant.id, Tenant.company_code).filter(Tenant.id.in_(tenant_ids)).all()
+        tenant_codes = {tenant_id: company_code for tenant_id, company_code in tenants}
+
+    rows: list[dict] = []
+    for record in records:
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        payload = meta.get("payload") if isinstance(meta.get("payload"), dict) else {}
+        delivery = meta.get("delivery") if isinstance(meta.get("delivery"), dict) else {}
+        event_type = str(meta.get("event_type") or "").strip()
+        channel_type = str(meta.get("channel_type") or "").strip() or "-"
+        channel_user_id = str(meta.get("channel_user_id") or "").strip() or "-"
+        session_id = str(meta.get("session_id") or "").strip() or "-"
+        reason = str(meta.get("reason") or payload.get("reason") or payload.get("handoff_reason") or "").strip() or "-"
+        active_order_name = (
+            payload.get("active_order_name")
+            or payload.get("name")
+            or payload.get("sales_order_name")
+            or "-"
+        )
+        rows.append(
+            {
+                "created_at": record.created_at,
+                "action": record.action,
+                "event_type": event_type or record.action,
+                "tenant_id": record.tenant_id,
+                "tenant_company_code": tenant_codes.get(record.tenant_id) or "-",
+                "channel_type": channel_type,
+                "channel_user_id": channel_user_id,
+                "session_id": session_id,
+                "reason": reason,
+                "active_order_name": active_order_name,
+                "payload": payload,
+                "target_type": payload.get("handoff_target_type") or "-",
+                "target_destination": payload.get("handoff_target_destination") or "-",
+                "delivery_status": delivery.get("status") or "-",
+                "delivery_error": delivery.get("error") or "-",
+                "reply_preview": payload.get("reply_preview") or payload.get("next_action") or "-",
+            }
+        )
+    return rows
+
+
+def list_ai_conversations(
+    db: Session,
+    *,
+    limit: int = 200,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+    query: str | None = None,
+) -> list[dict]:
+    q = db.query(AIConversation, Tenant.company_code).join(Tenant, AIConversation.tenant_id == Tenant.id)
+    if tenant_code:
+        q = q.filter(Tenant.company_code == tenant_code)
+    if channel_type:
+        q = q.filter(AIConversation.channel_type == channel_type)
+    if query:
+        like_query = f"%{query}%"
+        q = q.filter(
+            (AIConversation.session_id.ilike(like_query))
+            | (AIConversation.channel_user_id.ilike(like_query))
+            | (AIConversation.erp_customer_id.ilike(like_query))
+            | (AIConversation.buyer_name.ilike(like_query))
+            | (AIConversation.buyer_phone.ilike(like_query))
+        )
+    rows = q.order_by(AIConversation.last_message_at.desc().nullslast(), AIConversation.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": str(conversation.id),
+            "tenant_company_code": company_code,
+            "session_id": conversation.session_id,
+            "channel_type": conversation.channel_type,
+            "channel_user_id": conversation.channel_user_id,
+            "erp_customer_id": conversation.erp_customer_id,
+            "buyer_name": conversation.buyer_name,
+            "buyer_phone": conversation.buyer_phone,
+            "status": conversation.status,
+            "last_stage": conversation.last_stage,
+            "last_message_at": conversation.last_message_at,
+            "created_at": conversation.created_at,
+        }
+        for conversation, company_code in rows
+    ]
+
+
+def get_ai_conversation_detail(db: Session, conversation_id: str) -> tuple[dict | None, list[dict]]:
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        return None, []
+    row = (
+        db.query(AIConversation, Tenant.company_code)
+        .join(Tenant, AIConversation.tenant_id == Tenant.id)
+        .filter(AIConversation.id == conversation_uuid)
+        .first()
+    )
+    if not row:
+        return None, []
+    conversation, company_code = row
+    messages = (
+        db.query(AIConversationMessage)
+        .filter(AIConversationMessage.conversation_id == conversation.id)
+        .order_by(AIConversationMessage.created_at.asc(), AIConversationMessage.id.asc())
+        .all()
+    )
+    return (
+        {
+            "id": str(conversation.id),
+            "tenant_company_code": company_code,
+            "session_id": conversation.session_id,
+            "channel_type": conversation.channel_type,
+            "channel_user_id": conversation.channel_user_id,
+            "erp_customer_id": conversation.erp_customer_id,
+            "buyer_name": conversation.buyer_name,
+            "buyer_phone": conversation.buyer_phone,
+            "status": conversation.status,
+            "last_stage": conversation.last_stage,
+            "first_customer_message_at": conversation.first_customer_message_at,
+            "last_message_at": conversation.last_message_at,
+            "created_at": conversation.created_at,
+            "summary": conversation.summary,
+        },
+        [
+            {
+                "id": str(message.id),
+                "message_id": message.message_id,
+                "role": message.role,
+                "message_type": message.message_type,
+                "stage": message.stage,
+                "behavior_class": message.behavior_class,
+                "tool_name": message.tool_name,
+                "content": message.content,
+                "payload_json": message.payload_json,
+                "created_at": message.created_at,
+            }
+            for message in messages
+        ],
+    )
 
 @router.get("/")
 def index() -> RedirectResponse:
@@ -638,6 +949,7 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         set_flash(request, error="Tenant not found")
         return redirect_to("/admin-ui/tenants")
 
+    request.session["tenant_id"] = str(tenant.id)
     licenses = (
         db.query(LicenseKey)
         .filter(LicenseKey.tenant_id == tenant.id)
@@ -670,6 +982,306 @@ def tenant_detail(request: Request, company_code: str, db: Session = Depends(get
         csrf_token=get_csrf_token(request),
     )
     return templates.TemplateResponse("tenant_detail.html", context)
+
+
+@router.get("/tenant/channels")
+def tenant_channels_page(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+    tenant = _session_tenant(db, request)
+    if not tenant:
+        set_flash(request, error="Open tenant details first to select a tenant.")
+        return redirect_to("/admin-ui/tenants")
+    channel = db.query(TenantChannel).filter(TenantChannel.tenant_id == tenant.id).first()
+    tenant_config_snapshot = build_tenant_config_snapshot(tenant)
+    ai_config = tenant_config_snapshot.payload.ai.model_dump(mode="python")
+    message, error, _ = pop_flash(request)
+    context = build_admin_context(
+        request,
+        f"Channels {tenant.company_code}",
+        "licensing",
+        "tenant-channels",
+        tenant=tenant,
+        channel=channel,
+        ai_config=ai_config,
+        ai_allowed_tools_json=json.dumps(ai_config.get("tools_policy", {}).get("allowed_tools", []), ensure_ascii=False),
+        ai_behavior_rules_json=json.dumps(ai_config.get("classification", {}).get("behavior_rules", []), ensure_ascii=False, indent=2),
+        ai_intent_rules_json=json.dumps(ai_config.get("classification", {}).get("intent_rules", []), ensure_ascii=False, indent=2),
+        ai_prompt_overrides_json=json.dumps(ai_config.get("prompt_overrides", {}), ensure_ascii=False, indent=2),
+        message=message,
+        error=error,
+        csrf_token=get_csrf_token(request),
+    )
+    return templates.TemplateResponse("tenant_channels.html", context)
+
+
+@router.post("/tenant/channels")
+async def save_tenant_channels(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/tenant/channels")
+    if csrf_error:
+        return csrf_error
+    tenant = _session_tenant(db, request)
+    if not tenant:
+        set_flash(request, error="Open tenant details first to select a tenant.")
+        return redirect_to("/admin-ui/tenants")
+
+    tg_bot_token = str(form.get("tg_bot_token") or "").strip() or None
+    tg_webhook_secret = str(form.get("tg_webhook_secret") or "").strip() or None
+    tg_phone_number = normalize_phone(str(form.get("tg_phone_number") or ""))
+    wa_account_sid = str(form.get("wa_account_sid") or "").strip() or None
+    wa_auth_token = str(form.get("wa_auth_token") or "").strip() or None
+    wa_number = normalize_phone(str(form.get("wa_number") or ""))
+    webchat_enabled = parse_bool_form(form.get("webchat_enabled"))
+    webchat_widget_token = str(form.get("webchat_widget_token") or "").strip() or None
+    webchat_allowed_origins = normalize_json_array(str(form.get("webchat_allowed_origins") or ""))
+    ai_system_prompt = str(form.get("ai_system_prompt") or "").strip() or None
+    ai_language = str(form.get("ai_language") or "ru").strip() or "ru"
+    ai_allow_invoice = parse_bool_form(form.get("ai_allow_invoice"))
+    ai_allow_license_ops = parse_bool_form(form.get("ai_allow_license_ops"))
+    ai_allow_discount_promises = parse_bool_form(form.get("ai_allow_discount_promises"))
+    ai_allow_free_text_catalog_answers = parse_bool_form(form.get("ai_allow_free_text_catalog_answers"))
+    ai_handoff_enabled = parse_bool_form(form.get("ai_handoff_enabled"))
+    ai_allow_customer_requested_handoff = parse_bool_form(form.get("ai_allow_customer_requested_handoff"))
+    ai_frustrated_customer_handoff = parse_bool_form(form.get("ai_frustrated_customer_handoff"))
+    ai_handoff_target_type = str(form.get("ai_handoff_target_type") or "none").strip().lower() or "none"
+    if ai_handoff_target_type not in {"none", "email", "telegram", "dashboard"}:
+        set_flash(request, error="Handoff target type is invalid.")
+        return redirect_to("/admin-ui/tenant/channels")
+    ai_handoff_target_destination = str(form.get("ai_handoff_target_destination") or "").strip() or None
+    ai_handoff_target_instructions = str(form.get("ai_handoff_target_instructions") or "").strip() or None
+    try:
+        ai_clarification_failure_limit = int(str(form.get("ai_clarification_failure_limit") or "2").strip() or "2")
+    except ValueError:
+        set_flash(request, error="Clarification failure limit must be an integer.")
+        return redirect_to("/admin-ui/tenant/channels")
+    if ai_clarification_failure_limit < 1:
+        set_flash(request, error="Clarification failure limit must be at least 1.")
+        return redirect_to("/admin-ui/tenant/channels")
+    ai_allowed_tools_raw = str(form.get("ai_allowed_tools") or "").strip()
+    ai_allowed_tools = parse_json_array(ai_allowed_tools_raw)
+    if ai_allowed_tools is None:
+        set_flash(request, error="Allowed tools must be a JSON array.")
+        return redirect_to("/admin-ui/tenant/channels")
+    ai_behavior_rules_raw = str(form.get("ai_behavior_rules_json") or "").strip()
+    ai_behavior_rules = parse_json_object(ai_behavior_rules_raw)
+    if ai_behavior_rules is None or not isinstance(ai_behavior_rules, list):
+        set_flash(request, error="Behavior rules must be a JSON array.")
+        return redirect_to("/admin-ui/tenant/channels")
+    ai_intent_rules_raw = str(form.get("ai_intent_rules_json") or "").strip()
+    ai_intent_rules = parse_json_object(ai_intent_rules_raw)
+    if ai_intent_rules is None or not isinstance(ai_intent_rules, list):
+        set_flash(request, error="Intent rules must be a JSON array.")
+        return redirect_to("/admin-ui/tenant/channels")
+    ai_prompt_overrides_raw = str(form.get("ai_prompt_overrides_json") or "").strip()
+    ai_prompt_overrides = parse_json_object(ai_prompt_overrides_raw)
+    if ai_prompt_overrides is None or not isinstance(ai_prompt_overrides, dict):
+        set_flash(request, error="Prompt overrides must be a JSON object.")
+        return redirect_to("/admin-ui/tenant/channels")
+
+    channel = db.query(TenantChannel).filter(TenantChannel.tenant_id == tenant.id).first()
+    if not channel:
+        channel = TenantChannel(tenant_id=tenant.id)
+        db.add(channel)
+
+    tg_bot_username = channel.tg_bot_username
+    if tg_bot_token:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            get_me = await client.get(f"https://api.telegram.org/bot{tg_bot_token}/getMe")
+            body = get_me.json()
+            if get_me.status_code != 200 or not body.get("ok"):
+                set_flash(request, error="Telegram bot token is invalid")
+                return redirect_to("/admin-ui/tenant/channels")
+            tg_bot_username = body.get("result", {}).get("username")
+            webhook_base = (settings.ai_agent_webhook_base or "").strip().rstrip("/")
+            webhook_url = f"{webhook_base}/webhook/telegram/{tg_bot_token}" if webhook_base else ""
+            if webhook_url:
+                effective_secret = tg_webhook_secret or channel.tg_webhook_secret or secrets.token_urlsafe(32)
+                set_webhook = await client.post(
+                    f"https://api.telegram.org/bot{tg_bot_token}/setWebhook",
+                    data={
+                        "url": webhook_url,
+                        "secret_token": effective_secret,
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
+                    },
+                )
+                set_webhook_payload = set_webhook.json()
+                if set_webhook.status_code != 200 or not set_webhook_payload.get("ok"):
+                    detail = set_webhook_payload.get("description", "Failed to set webhook")
+                    set_flash(request, error=f"Telegram webhook error: {detail}")
+                    return redirect_to("/admin-ui/tenant/channels")
+    else:
+        tg_bot_username = None
+
+    channel.tg_bot_token = tg_bot_token
+    channel.tg_webhook_secret = (tg_webhook_secret or channel.tg_webhook_secret or secrets.token_urlsafe(32)) if tg_bot_token else None
+    channel.tg_bot_username = tg_bot_username
+    channel.tg_phone_number = tg_phone_number if tg_bot_token else None
+    channel.wa_account_sid = wa_account_sid
+    channel.wa_auth_token = wa_auth_token
+    channel.wa_number = wa_number
+    if not wa_account_sid and not wa_auth_token and not wa_number:
+        channel.wa_account_sid = None
+        channel.wa_auth_token = None
+        channel.wa_number = None
+    channel.webchat_enabled = webchat_enabled
+    channel.webchat_widget_token = webchat_widget_token
+    channel.webchat_allowed_origins = webchat_allowed_origins
+    channel.ai_system_prompt = ai_system_prompt
+    channel.ai_language = ai_language
+
+    tenant_config = _sanitize_tenant_config_payload(_safe_json_dict(tenant.tenant_config))
+    ai_config = _safe_json_dict(tenant_config.get("ai"))
+    ai_handoff_rules = _safe_json_dict(ai_config.get("handoff_rules"))
+    ai_handoff_target = _safe_json_dict(ai_config.get("handoff_target"))
+    ai_tools_policy = _safe_json_dict(ai_config.get("tools_policy"))
+    ai_classification = _safe_json_dict(ai_config.get("classification"))
+    ai_handoff_rules.update(
+        {
+            "enabled": ai_handoff_enabled,
+            "clarification_failure_limit": ai_clarification_failure_limit,
+            "allow_customer_requested_handoff": ai_allow_customer_requested_handoff,
+            "frustrated_customer_handoff": ai_frustrated_customer_handoff,
+        }
+    )
+    ai_tools_policy.update(
+        {
+            "allowed_tools": ai_allowed_tools,
+        }
+    )
+    ai_classification.update(
+        {
+            "behavior_rules": ai_behavior_rules,
+            "intent_rules": ai_intent_rules,
+        }
+    )
+    ai_handoff_target.update(
+        {
+            "target_type": ai_handoff_target_type,
+            "destination": ai_handoff_target_destination,
+            "instructions": ai_handoff_target_instructions,
+        }
+    )
+    ai_config.update(
+        {
+            "allow_invoice": ai_allow_invoice,
+            "allow_license_ops": ai_allow_license_ops,
+            "allow_discount_promises": ai_allow_discount_promises,
+            "allow_free_text_catalog_answers": ai_allow_free_text_catalog_answers,
+            "handoff_rules": ai_handoff_rules,
+            "handoff_target": ai_handoff_target,
+            "tools_policy": ai_tools_policy,
+            "classification": ai_classification,
+            "prompt_overrides": ai_prompt_overrides,
+        }
+    )
+    tenant_config["ai"] = ai_config
+    try:
+        validated_config = TenantConfigPayload.model_validate(tenant_config)
+    except ValidationError as exc:
+        details = "; ".join(err.get("msg", "Invalid AI config") for err in exc.errors())
+        set_flash(request, error=details or "AI configuration is invalid.")
+        return redirect_to("/admin-ui/tenant/channels")
+    tenant_config = validated_config.model_dump(mode="python")
+    tenant.tenant_config = tenant_config
+    tenant.tenant_config_revision = uuid.uuid4().hex
+    tenant.tenant_config_updated_at = utcnow()
+    tenant.tenant_config_updated_by = "admin-ui"
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        set_flash(request, error="Token or phone number is already attached to another tenant.")
+        return redirect_to("/admin-ui/tenant/channels")
+    set_flash(request, message="Channels updated")
+    return redirect_to("/admin-ui/tenant/channels")
+
+
+@router.post("/tenant/channels/tg/test")
+async def test_telegram_channel(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/tenant/channels")
+    if csrf_error:
+        return csrf_error
+    tg_bot_token = str(form.get("tg_bot_token") or "").strip()
+    if not tg_bot_token:
+        set_flash(request, error="Telegram token is required")
+        return redirect_to("/admin-ui/tenant/channels")
+    tenant = _session_tenant(db, request)
+    if not tenant:
+        set_flash(request, error="Open tenant details first to select a tenant.")
+        return redirect_to("/admin-ui/tenants")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"https://api.telegram.org/bot{tg_bot_token}/getMe")
+        payload = resp.json()
+        if resp.status_code == 200 and payload.get("ok"):
+            username = payload.get("result", {}).get("username", "")
+            channel = db.query(TenantChannel).filter(TenantChannel.tenant_id == tenant.id).first()
+            if not channel:
+                channel = TenantChannel(tenant_id=tenant.id)
+                db.add(channel)
+            channel.tg_bot_token = tg_bot_token
+            channel.tg_bot_username = username or None
+            if not channel.tg_webhook_secret:
+                channel.tg_webhook_secret = secrets.token_urlsafe(32)
+            webhook_base = (settings.ai_agent_webhook_base or "").strip().rstrip("/")
+            webhook_url = f"{webhook_base}/webhook/telegram/{tg_bot_token}" if webhook_base else ""
+            if webhook_url:
+                set_webhook = await client.post(
+                    f"https://api.telegram.org/bot{tg_bot_token}/setWebhook",
+                    data={
+                        "url": webhook_url,
+                        "secret_token": channel.tg_webhook_secret,
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
+                    },
+                )
+                set_webhook_payload = set_webhook.json()
+                if set_webhook.status_code != 200 or not set_webhook_payload.get("ok"):
+                    detail = set_webhook_payload.get("description", "Failed to set webhook")
+                    db.rollback()
+                    set_flash(request, error=f"Telegram webhook error: {detail}")
+                    return redirect_to("/admin-ui/tenant/channels")
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                set_flash(request, error="Telegram token is already attached to another tenant.")
+                return redirect_to("/admin-ui/tenant/channels")
+            set_flash(request, message=f"Telegram OK and saved: @{username}")
+        else:
+            set_flash(request, error="Telegram token test failed")
+    return redirect_to("/admin-ui/tenant/channels")
+
+
+@router.post("/tenant/channels/wa/test")
+async def test_whatsapp_channel(request: Request):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+    form = await request.form()
+    csrf_error = require_csrf(request, form, "/admin-ui/tenant/channels")
+    if csrf_error:
+        return csrf_error
+    sid = str(form.get("wa_account_sid") or "").strip()
+    token = str(form.get("wa_auth_token") or "").strip()
+    if not sid or not token:
+        set_flash(request, error="WhatsApp SID and Auth Token are required")
+        return redirect_to("/admin-ui/tenant/channels")
+    async with httpx.AsyncClient(timeout=15.0, auth=(sid, token)) as client:
+        resp = await client.get("https://api.twilio.com/2010-04-01/Accounts.json", params={"PageSize": 1})
+        if resp.status_code == 200:
+            set_flash(request, message="WhatsApp credentials look valid")
+        else:
+            set_flash(request, error="WhatsApp credential test failed")
+    return redirect_to("/admin-ui/tenant/channels")
 
 
 @router.get("/licenses")
@@ -1809,6 +2421,90 @@ def license_diagnostics_page(request: Request, db: Session = Depends(get_db)):
         csrf_token=get_csrf_token(request),
     )
     return templates.TemplateResponse("license_diagnostics.html", context)
+
+
+@router.get("/ai-operations")
+def ai_operations_page(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    window_hours = parse_log_window_hours(request.query_params.get("window_hours"))
+    scope = normalize_ai_log_scope(request.query_params.get("scope"))
+    rows = fetch_ai_audit_logs(
+        db=db,
+        window_hours=window_hours,
+        scope=scope,
+    )
+    handoff_count = sum(1 for row in rows if row["action"] == "ai_handoff")
+    event_count = sum(1 for row in rows if row["action"] == "ai_conversation_event")
+    delivered_handoff_count = sum(
+        1 for row in rows if row["action"] == "ai_handoff" and row.get("delivery_status") == "delivered"
+    )
+    failed_handoff_count = sum(
+        1 for row in rows if row["action"] == "ai_handoff" and row.get("delivery_status") == "failed"
+    )
+
+    context = build_admin_context(
+        request,
+        "AI Operations",
+        "licensing",
+        "ai-operations",
+        rows=rows,
+        handoff_count=handoff_count,
+        event_count=event_count,
+        delivered_handoff_count=delivered_handoff_count,
+        failed_handoff_count=failed_handoff_count,
+        selected_window_hours=window_hours,
+        selected_scope=scope,
+    )
+    return templates.TemplateResponse("ai_operations.html", context)
+
+
+@router.get("/ai-conversations")
+def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    tenant_code = str(request.query_params.get("tenant") or "").strip() or None
+    channel_type = str(request.query_params.get("channel") or "").strip() or None
+    query = str(request.query_params.get("q") or "").strip() or None
+    rows = list_ai_conversations(db, tenant_code=tenant_code, channel_type=channel_type, query=query)
+
+    context = build_admin_context(
+        request,
+        "AI Conversations",
+        "licensing",
+        "ai-conversations",
+        rows=rows,
+        selected_tenant=tenant_code or "",
+        selected_channel=channel_type or "",
+        selected_query=query or "",
+    )
+    return templates.TemplateResponse("ai_conversations.html", context)
+
+
+@router.get("/ai-conversations/{conversation_id}")
+def ai_conversation_detail_page(conversation_id: str, request: Request, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    conversation, messages = get_ai_conversation_detail(db, conversation_id)
+    if not conversation:
+        set_flash(request, error="AI conversation not found.")
+        return redirect_to("/admin-ui/ai-conversations")
+
+    context = build_admin_context(
+        request,
+        "AI Conversation",
+        "licensing",
+        "ai-conversations",
+        conversation=conversation,
+        messages=messages,
+    )
+    return templates.TemplateResponse("ai_conversation_detail.html", context)
 
 
 @router.post("/license-diagnostics")

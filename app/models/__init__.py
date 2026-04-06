@@ -1,4 +1,7 @@
+from app.models.ai_conversation import AIConversation
+from app.models.ai_conversation_message import AIConversationMessage
 from app.models.audit_log import AuditLog
+from app.models.buyer_channel_identity import BuyerChannelIdentity
 from app.models.device import Device
 from app.models.device_pairing_token import DevicePairingToken
 from app.models.erp_allowlist import ERPAllowlistEntry, ERPAllowlistType
@@ -11,9 +14,13 @@ from app.models.pick_list_delivery_note import PickListDeliveryNoteLink
 from app.models.process_job import ProcessJob, ProcessJobStatus
 from app.models.sales_order_pick_list import SalesOrderPickListLink
 from app.models.tenant import Tenant, TenantStatus
+from app.models.tenant_channel import TenantChannel
 
 __all__ = [
     "AuditLog",
+    "AIConversation",
+    "AIConversationMessage",
+    "BuyerChannelIdentity",
     "Device",
     "DevicePairingToken",
     "DeviceOTALog",
@@ -30,5 +37,6 @@ __all__ = [
     "ProcessJobStatus",
     "SalesOrderPickListLink",
     "Tenant",
+    "TenantChannel",
     "TenantStatus",
 ]

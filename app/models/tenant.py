@@ -39,3 +39,5 @@ class Tenant(Base):
 
     license_keys = relationship("LicenseKey", back_populates="tenant", cascade="all, delete-orphan")
     devices = relationship("Device", back_populates="tenant", cascade="all, delete-orphan")
+    channel = relationship("TenantChannel", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
+    buyer_identities = relationship("BuyerChannelIdentity", back_populates="tenant", cascade="all, delete-orphan")
