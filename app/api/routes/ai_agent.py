@@ -293,6 +293,7 @@ def _channel_ai_policy(channel: TenantChannel | None, tenant: Tenant) -> dict[st
         "register_buyer",
         "get_buyer_sales_history",
         "create_sales_order",
+        "get_sales_order_status",
         "update_sales_order",
         "send_sales_order_pdf",
         "create_invoice",
@@ -309,6 +310,9 @@ def _channel_ai_policy(channel: TenantChannel | None, tenant: Tenant) -> dict[st
         allowed_tools = [str(item).strip() for item in configured_tools if str(item).strip()]
     else:
         allowed_tools = list(default_allowed_tools)
+    if any(tool in allowed_tools for tool in {"update_sales_order", "send_sales_order_pdf", "create_invoice"}):
+        if "get_sales_order_status" not in allowed_tools:
+            allowed_tools.append("get_sales_order_status")
     if not allow_invoice:
         allowed_tools = [tool for tool in allowed_tools if tool != "create_invoice"]
     if not allow_license_ops:
