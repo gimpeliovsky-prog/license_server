@@ -30,6 +30,18 @@ def _percentage_complete(value: Any) -> bool:
         return False
 
 
+def _compact_sales_order_item(item: dict[str, Any]) -> dict[str, Any]:
+    data = item if isinstance(item, dict) else {}
+    compact = {
+        "name": data.get("name"),
+        "item_code": data.get("item_code"),
+        "item_name": data.get("item_name"),
+        "qty": data.get("qty"),
+        "uom": data.get("uom") or data.get("stock_uom"),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+
 def _build_sales_order_status(order: dict[str, Any], *, sales_order_name: str | None = None) -> dict[str, Any]:
     data = order if isinstance(order, dict) else {}
     docstatus = data.get("docstatus")
@@ -52,6 +64,11 @@ def _build_sales_order_status(order: dict[str, Any], *, sales_order_name: str | 
     )
     cancelled = status_text == "cancelled" or str(docstatus or "") == "2"
     can_modify = not (delivered or invoiced or cancelled)
+    compact_items = [
+        _compact_sales_order_item(item)
+        for item in (data.get("items") if isinstance(data.get("items"), list) else [])
+        if isinstance(item, dict)
+    ]
     return {
         "name": data.get("name") or sales_order_name,
         "status": data.get("status"),
@@ -61,7 +78,7 @@ def _build_sales_order_status(order: dict[str, Any], *, sales_order_name: str | 
         "per_delivered": per_delivered,
         "per_billed": per_billed,
         "can_modify": can_modify,
-        "items": data.get("items") if isinstance(data.get("items"), list) else [],
+        "items": compact_items,
         "grand_total": data.get("grand_total"),
         "rounded_total": data.get("rounded_total"),
         "total": data.get("total"),
