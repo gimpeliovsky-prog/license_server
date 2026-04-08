@@ -129,6 +129,17 @@ def resolve_effective_warehouse(tenant, requested_warehouse: str | None = None) 
     }
 
 
+def _status_text(data: dict[str, Any], key: str) -> str:
+    return str(data.get(key) or "").strip().casefold()
+
+
+def _percentage_complete(value: Any) -> bool:
+    try:
+        return float(value or 0) >= 100.0
+    except (TypeError, ValueError):
+        return False
+
+
 def build_sales_order_status(order: dict[str, Any], *, order_name: str | None = None) -> dict[str, Any]:
     data = order if isinstance(order, dict) else {}
     docstatus = data.get("docstatus")
@@ -136,13 +147,20 @@ def build_sales_order_status(order: dict[str, Any], *, order_name: str | None = 
     billing_status = data.get("billing_status")
     per_delivered = data.get("per_delivered")
     per_billed = data.get("per_billed")
-    status_parts = " ".join(
-        str(data.get(key) or "")
-        for key in ["status", "docstatus", "delivery_status", "billing_status", "per_delivered", "per_billed"]
-    ).casefold()
-    delivered = "delivered" in status_parts or str(per_delivered or "") in {"100", "100.0"}
-    invoiced = "invoiced" in status_parts or "completed" in status_parts or str(per_billed or "") in {"100", "100.0"}
-    cancelled = "cancel" in status_parts or str(docstatus or "") == "2"
+    status_text = _status_text(data, "status")
+    delivery_status_text = _status_text(data, "delivery_status")
+    billing_status_text = _status_text(data, "billing_status")
+    delivered = (
+        delivery_status_text in {"delivered", "fully delivered"}
+        or status_text in {"delivered", "fully delivered"}
+        or _percentage_complete(per_delivered)
+    )
+    invoiced = (
+        billing_status_text in {"invoiced", "fully billed", "billed"}
+        or status_text in {"completed", "invoiced", "fully billed", "billed"}
+        or _percentage_complete(per_billed)
+    )
+    cancelled = status_text == "cancelled" or str(docstatus or "") == "2"
     can_modify = not (delivered or invoiced or cancelled)
     return {
         "name": data.get("name") or order_name,
