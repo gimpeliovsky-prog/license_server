@@ -1,6 +1,6 @@
 """ai conversation runtime state
 
-Revision ID: 0023_ai_conversation_runtime_state
+Revision ID: 0023_ai_conv_runtime_state
 Revises: 0022_ai_conversation_transcripts
 Create Date: 2026-04-08
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "0023_ai_conversation_runtime_state"
+revision: str = "0023_ai_conv_runtime_state"
 down_revision: Union[str, None] = "0022_ai_conversation_transcripts"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
