@@ -2,8 +2,54 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
 from app.services.erpnext import request_tenant_erpnext
+
+
+def list_customers(
+    tenant,
+    *,
+    fields: str,
+    limit_start: int | None = None,
+    limit_page_length: int | None = None,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"fields": fields}
+    if limit_start is not None:
+        params["limit_start"] = limit_start
+    if limit_page_length is not None:
+        params["limit_page_length"] = limit_page_length
+    response = request_tenant_erpnext(
+        tenant,
+        "GET",
+        "/api/resource/Customer",
+        params=params,
+    )
+    if response.status_code != 200:
+        return []
+    payload = response.json().get("data", [])
+    return payload if isinstance(payload, list) else []
+
+
+def get_customer_detail(
+    tenant,
+    customer_id: str,
+    *,
+    fields: str | None = None,
+) -> dict[str, Any] | None:
+    safe_name = quote(str(customer_id or "").strip(), safe="")
+    if not safe_name:
+        return None
+    response = request_tenant_erpnext(
+        tenant,
+        "GET",
+        f"/api/resource/Customer/{safe_name}",
+        params={"fields": fields} if fields else None,
+    )
+    if response.status_code != 200:
+        return None
+    payload = response.json().get("data", {})
+    return payload if isinstance(payload, dict) else None
 
 
 def load_sales_history(tenant, erp_customer_id: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -131,4 +177,3 @@ def create_individual_customer(tenant, *, full_name: str, normalized_phone: str 
         request_tenant_erpnext(tenant, "POST", "/api/resource/Contact", json_body=contact_body)
 
     return customer_id, customer_doc.get("customer_name") or full_name
-

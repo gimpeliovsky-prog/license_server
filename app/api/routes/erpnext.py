@@ -22,6 +22,7 @@ from app.schemas import (
 from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
 from app.services.erpnext import ERPNextError, default_fields, request_tenant_erpnext
+from app.services.erp_customers import get_customer_detail as get_customer_detail_for_tenant, list_customers as list_customers_for_tenant
 from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erp_stock import (
     get_item_availability as get_item_availability_for_tenant,
@@ -1302,24 +1303,42 @@ def get_customers(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_CUSTOMERS_READ)
-    params = {"fields": resolve_fields(fields, ["name", "customer_name"])}
-    if limit_start is not None:
-        params["limit_start"] = limit_start
-    if limit_page_length is not None:
-        params["limit_page_length"] = limit_page_length
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Customer", allowlist)
     try:
-        response = request_tenant_erpnext(
+        data = list_customers_for_tenant(
             context.tenant,
-            "GET",
-            "/api/resource/Customer",
-            params=params,
+            fields=resolve_fields(fields, ["name", "customer_name"]),
+            limit_start=limit_start,
+            limit_page_length=limit_page_length,
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+    return JSONResponse(content={"data": data}, status_code=200)
+
+
+@router.get("/customers/{customer_id}")
+def get_customer(
+    customer_id: str,
+    fields: str | None = Query(default=None),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_CUSTOMERS_READ)
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Customer", allowlist)
+    try:
+        data = get_customer_detail_for_tenant(
+            context.tenant,
+            customer_id,
+            fields=fields,
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Customer '{customer_id}' not found")
+    return JSONResponse(content={"data": data}, status_code=200)
 
 
 @router.api_route("/resource/{doctype}", methods=["GET", "POST"])

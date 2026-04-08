@@ -17,7 +17,13 @@ from app.models import LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.models.tenant_channel import TenantChannel
 from app.services.ai_handoff import dispatch_handoff
 from app.services.erp_catalog import get_item_detail, list_items
-from app.services.erp_customers import create_individual_customer, load_sales_history, resolve_customer_by_phone
+from app.services.erp_customers import (
+    create_individual_customer,
+    get_customer_detail as get_customer_detail_for_tenant,
+    list_customers as list_customers_for_tenant,
+    load_sales_history,
+    resolve_customer_by_phone,
+)
 from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erpnext import (
     ERPNextError,
@@ -283,6 +289,7 @@ def _channel_ai_policy(channel: TenantChannel | None, tenant: Tenant) -> dict[st
     prompt_overrides = _safe_json_dict(ai_config.get("prompt_overrides"))
     default_allowed_tools = [
         "get_product_catalog",
+        "get_item_availability",
         "register_buyer",
         "get_buyer_sales_history",
         "create_sales_order",
@@ -700,6 +707,33 @@ def get_buyer_sales_history(company_code: str, erp_customer_id: str, db: Session
         "recent_sales_orders": sales_orders,
         "recent_sales_invoices": sales_invoices,
     }
+
+
+@router.get("/tenants/{company_code}/customers")
+def get_customers(
+    company_code: str,
+    limit_start: int | None = None,
+    limit_page_length: int | None = 200,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant = _get_tenant(db, company_code)
+    return {
+        "data": list_customers_for_tenant(
+            tenant,
+            fields='["name","customer_name"]',
+            limit_start=limit_start,
+            limit_page_length=limit_page_length,
+        )
+    }
+
+
+@router.get("/tenants/{company_code}/customers/{erp_customer_id}")
+def get_customer(company_code: str, erp_customer_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    tenant = _get_tenant(db, company_code)
+    data = get_customer_detail_for_tenant(tenant, erp_customer_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Customer '{erp_customer_id}' not found")
+    return data
 
 
 @router.get("/tenants/{company_code}/ai-policy")
