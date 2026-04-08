@@ -11,6 +11,104 @@ from app.services.erpnext import desk_form_url, printview_url, request_tenant_er
 from app.utils.time import utcnow
 
 
+def _safe_json(response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _status_text(data: dict[str, Any], key: str) -> str:
+    return str(data.get(key) or "").strip().casefold()
+
+
+def _percentage_complete(value: Any) -> bool:
+    try:
+        return float(value or 0) >= 100.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _build_sales_order_status(order: dict[str, Any], *, sales_order_name: str | None = None) -> dict[str, Any]:
+    data = order if isinstance(order, dict) else {}
+    docstatus = data.get("docstatus")
+    delivery_status = data.get("delivery_status")
+    billing_status = data.get("billing_status")
+    per_delivered = data.get("per_delivered")
+    per_billed = data.get("per_billed")
+    status_text = _status_text(data, "status")
+    delivery_status_text = _status_text(data, "delivery_status")
+    billing_status_text = _status_text(data, "billing_status")
+    delivered = (
+        delivery_status_text in {"delivered", "fully delivered"}
+        or status_text in {"delivered", "fully delivered"}
+        or _percentage_complete(per_delivered)
+    )
+    invoiced = (
+        billing_status_text in {"invoiced", "fully billed", "billed"}
+        or status_text in {"completed", "invoiced", "fully billed", "billed"}
+        or _percentage_complete(per_billed)
+    )
+    cancelled = status_text == "cancelled" or str(docstatus or "") == "2"
+    can_modify = not (delivered or invoiced or cancelled)
+    return {
+        "name": data.get("name") or sales_order_name,
+        "status": data.get("status"),
+        "docstatus": docstatus,
+        "delivery_status": delivery_status,
+        "billing_status": billing_status,
+        "per_delivered": per_delivered,
+        "per_billed": per_billed,
+        "can_modify": can_modify,
+        "items": data.get("items") if isinstance(data.get("items"), list) else [],
+        "grand_total": data.get("grand_total"),
+        "rounded_total": data.get("rounded_total"),
+        "total": data.get("total"),
+        "net_total": data.get("net_total"),
+        "currency": data.get("currency") or data.get("company_currency"),
+    }
+
+
+def _non_modifiable_detail(
+    order: dict[str, Any],
+    *,
+    sales_order_name: str,
+    message: str | None = None,
+) -> dict[str, Any]:
+    state = _build_sales_order_status(order, sales_order_name=sales_order_name)
+    return {
+        "error": message or "Sales order cannot be modified in its current state.",
+        "error_code": "sales_order_not_modifiable",
+        "sales_order_name": state.get("name") or sales_order_name,
+        **state,
+    }
+
+
+def _raise_if_order_not_modifiable(order: dict[str, Any], *, sales_order_name: str) -> None:
+    state = _build_sales_order_status(order, sales_order_name=sales_order_name)
+    if not state.get("can_modify"):
+        raise HTTPException(status_code=409, detail=_non_modifiable_detail(order, sales_order_name=sales_order_name))
+
+
+def _looks_like_not_modifiable_failure(response) -> bool:
+    payload = _safe_json(response)
+    detail = payload.get("exception") or payload.get("message") or payload.get("detail") or response.text
+    text = str(detail or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "update after submit",
+            "cannot edit",
+            "not allowed to change",
+            "submitted document",
+            "docstatus",
+            "not editable",
+            "cancelled",
+        )
+    )
+
+
 def normalize_sales_order_item(item: dict[str, Any]) -> dict[str, Any] | None:
     item_code = item.get("item_code")
     qty = item.get("qty")
@@ -163,6 +261,7 @@ def update_sales_order_items(tenant, *, sales_order_name: str, items: list[dict[
         return {key: value for key, value in save_doc.items() if value not in (None, "")}
 
     order_doc = fetch_sales_order_doc(tenant, sales_order_name)
+    _raise_if_order_not_modifiable(order_doc, sales_order_name=sales_order_name)
     save_doc = _build_save_doc(order_doc)
     response = request_tenant_erpnext(tenant, "POST", "/api/method/frappe.client.save", json_body={"doc": save_doc})
     if response.status_code == 417:
@@ -184,7 +283,33 @@ def update_sales_order_items(tenant, *, sales_order_name: str, items: list[dict[
                 json_body={"doc": json.dumps(save_doc, ensure_ascii=False, default=str)},
             )
     if response.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=response.json().get("exception", response.text[:200]))
+        refreshed_order: dict[str, Any] | None = None
+        try:
+            refreshed_order = fetch_sales_order_doc(tenant, sales_order_name)
+        except HTTPException:
+            refreshed_order = None
+        if refreshed_order is not None:
+            refreshed_state = _build_sales_order_status(refreshed_order, sales_order_name=sales_order_name)
+            if not refreshed_state.get("can_modify"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=_non_modifiable_detail(
+                        refreshed_order,
+                        sales_order_name=sales_order_name,
+                        message="Sales order is no longer editable because its ERP status changed.",
+                    ),
+                )
+        if _looks_like_not_modifiable_failure(response):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Sales order is no longer editable because its ERP status changed.",
+                    "error_code": "sales_order_not_modifiable",
+                    "sales_order_name": sales_order_name,
+                },
+            )
+        payload = _safe_json(response)
+        raise HTTPException(status_code=502, detail=payload.get("exception", response.text[:200]))
 
     payload = response.json()
     order = payload.get("message") or payload.get("data") or {}
@@ -209,4 +334,3 @@ def create_invoice_from_sales_order(tenant, *, sales_order_name: str) -> dict[st
         "due_date": invoice.get("due_date"),
         "invoice_url": desk_form_url(tenant.erpnext_url, "sales-invoice", invoice.get("name")),
     }
-
