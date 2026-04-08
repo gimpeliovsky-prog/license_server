@@ -7,7 +7,7 @@ import secrets
 from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from app.models.tenant_channel import TenantChannel
 from app.services.ai_handoff import dispatch_handoff
 from app.services.erp_catalog import get_item_detail, list_items
 from app.services.erp_customers import create_individual_customer, load_sales_history, resolve_customer_by_phone
+from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erpnext import (
     ERPNextError,
     request_tenant_erpnext,
@@ -955,6 +956,26 @@ def get_item(company_code: str, item_code: str, lang: str | None = None, db: Ses
     if not item:
         raise HTTPException(status_code=404, detail=f"Item '{item_code}' not found")
     return item
+
+
+@router.get("/tenants/{company_code}/files/{file_path:path}")
+def get_public_media(company_code: str, file_path: str, db: Session = Depends(get_db)) -> Response:
+    tenant = _get_tenant(db, company_code)
+    try:
+        response = fetch_public_file(tenant, file_path)
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+
+
+@router.get("/tenants/{company_code}/private/files/{file_path:path}")
+def get_private_media(company_code: str, file_path: str, db: Session = Depends(get_db)) -> Response:
+    tenant = _get_tenant(db, company_code)
+    try:
+        response = fetch_private_file(tenant, file_path)
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
 
 
 @router.post("/tenants/{company_code}/sales-orders", status_code=201)

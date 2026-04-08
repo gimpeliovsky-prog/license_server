@@ -22,6 +22,7 @@ from app.schemas import (
 from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
 from app.services.erpnext import ERPNextError, default_fields, request_tenant_erpnext
+from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erp_stock import (
     get_bin_records,
     get_sales_order_status as get_sales_order_status_for_tenant,
@@ -352,16 +353,8 @@ def get_public_file(
     require_permissions(context, PERMISSION_ITEMS_READ)
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Item", allowlist)
-    normalized = (file_path or "").strip().lstrip("/")
-    if not normalized:
-        raise HTTPException(status_code=400, detail="File path is required")
-    safe_path = quote(normalized, safe="/")
     try:
-        response = request_tenant_erpnext(
-            context.tenant,
-            "GET",
-            f"/files/{safe_path}",
-        )
+        response = fetch_public_file(context.tenant, file_path)
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -377,16 +370,8 @@ def get_private_file(
     require_permissions(context, PERMISSION_ITEMS_READ)
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Item", allowlist)
-    normalized = (file_path or "").strip().lstrip("/")
-    if not normalized:
-        raise HTTPException(status_code=400, detail="File path is required")
-    safe_path = quote(normalized, safe="/")
     try:
-        response = request_tenant_erpnext(
-            context.tenant,
-            "GET",
-            f"/private/files/{safe_path}",
-        )
+        response = fetch_private_file(context.tenant, file_path)
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
