@@ -70,6 +70,20 @@
     </div>
 
     <div class="panel">
+      <h2>Handoff State</h2>
+      {% if latest_handoff %}
+      <div class="stack">
+        <div><strong>Reason</strong><div class="muted">{{ latest_handoff.reason }}</div></div>
+        <div><strong>Target</strong><div class="muted">{{ latest_handoff.target_type }}{% if latest_handoff.target_destination != "-" %} · {{ latest_handoff.target_destination }}{% endif %}</div></div>
+        <div><strong>Delivery</strong><div class="muted">{{ latest_handoff.delivery_status }}{% if latest_handoff.delivery_error != "-" %} · {{ latest_handoff.delivery_error }}{% endif %}</div></div>
+        <div><strong>At</strong><div class="muted" style="font-family: monospace;">{{ latest_handoff.created_at.isoformat() }}</div></div>
+      </div>
+      {% else %}
+      <p class="muted">No handoff event recorded for this conversation.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
       <h2>Customer</h2>
       <div class="stack">
         <div><strong>Name</strong><div class="muted">{{ conversation.buyer_name or "-" }}</div></div>
@@ -86,6 +100,28 @@
         <div><strong>First customer message</strong><div class="muted" style="font-family: monospace;">{{ conversation.first_customer_message_at.isoformat() if conversation.first_customer_message_at else "-" }}</div></div>
         <div><strong>Last message</strong><div class="muted" style="font-family: monospace;">{{ conversation.last_message_at.isoformat() if conversation.last_message_at else "-" }}</div></div>
       </div>
+    </div>
+
+    <div class="panel">
+      <h2>Important Events</h2>
+      {% if important_events %}
+      <div class="timeline-list">
+        {% for row in important_events %}
+        <div class="timeline-item">
+          <div class="inline" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
+            <div>
+              <strong>{{ row.event_type }}</strong>
+              <span class="muted">· {{ row.action }}</span>
+            </div>
+            <div class="muted" style="font-family: monospace;">{{ row.created_at.isoformat() }}</div>
+          </div>
+          <div class="muted" style="margin-top: 8px;">{{ row.reason }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">No important operations recorded yet.</p>
+      {% endif %}
     </div>
 
     <div class="panel">

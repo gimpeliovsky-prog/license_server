@@ -11,6 +11,12 @@
 </div>
 
 <div class="panel">
+  <div class="section-tabs">
+    <a class="button-ghost {% if selected_view == 'all' %}active{% endif %}" href="{{ request.url.include_query_params(view='all') }}">All</a>
+    <a class="button-ghost {% if selected_view == 'needs-attention' %}active{% endif %}" href="{{ request.url.include_query_params(view='needs-attention') }}">Needs Attention</a>
+    <a class="button-ghost {% if selected_view == 'open' %}active{% endif %}" href="{{ request.url.include_query_params(view='open') }}">Open</a>
+    <a class="button-ghost {% if selected_view == 'closed' %}active{% endif %}" href="{{ request.url.include_query_params(view='closed') }}">Closed</a>
+  </div>
   <div class="stats-grid">
     <div class="stat-card">
       <div class="stat-label">Total</div>
@@ -34,6 +40,7 @@
 
 <div class="panel">
   <form method="get" action="/admin-ui/ai-conversations" class="grid-2" style="align-items: end;">
+    <input type="hidden" name="view" value="{{ selected_view }}">
     <div>
       <label for="tenant">Tenant</label>
       <input id="tenant" type="text" name="tenant" value="{{ selected_tenant }}" placeholder="company_code">
@@ -121,9 +128,15 @@
             <span class="badge badge-info">Open</span>
             {% endif %}
             <span class="muted">{{ row.last_stage or "-" }}</span>
+            <span class="muted">{{ (row.summary[:110] ~ '...') if row.summary and row.summary|length > 110 else (row.summary or '-') }}</span>
           </td>
           <td style="font-family: monospace;">{{ row.session_id }}</td>
-          <td><a class="button-pill" href="/admin-ui/ai-conversations/{{ row.id }}">Open</a></td>
+          <td>
+            <div class="stack">
+              <a class="button-pill" href="/admin-ui/ai-conversations/{{ row.id }}">Open</a>
+              <a class="button-pill" href="/admin-ui/ai-operations?tenant={{ row.tenant_company_code }}&channel={{ row.channel_type }}&session={{ row.session_id }}">Ops</a>
+            </div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

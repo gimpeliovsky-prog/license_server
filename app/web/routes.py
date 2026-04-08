@@ -524,6 +524,21 @@ def normalize_ai_stage_filter(value: str | None) -> str:
 def normalize_free_text_filter(value: str | None) -> str:
     return str(value or "").strip()
 
+
+def normalize_ai_operations_view(value: str | None) -> str:
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in {"all", "failed-deliveries", "handoffs"} else "all"
+
+
+def normalize_ai_conversations_view(value: str | None) -> str:
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in {"all", "needs-attention", "open", "closed"} else "all"
+
+
+def normalize_delivery_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"delivered", "failed", "not_configured", "skipped", "pending"} else ""
+
 def parse_auto_refresh(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -619,6 +634,8 @@ def fetch_ai_audit_logs(
     tenant_code: str | None = None,
     channel_type: str | None = None,
     session_id: str | None = None,
+    event_type: str | None = None,
+    delivery_status: str | None = None,
     query: str | None = None,
     limit: int = 200,
 ) -> list[dict]:
@@ -646,7 +663,7 @@ def fetch_ai_audit_logs(
         record_query = record_query.filter(AuditLog.tenant_id.in_(tenant_ids))
 
     raw_limit = limit
-    if channel_type or session_id or query:
+    if channel_type or session_id or event_type or delivery_status or query:
         raw_limit = max(limit * 8, 1000)
     records = record_query.limit(raw_limit).all()
 
@@ -696,6 +713,10 @@ def fetch_ai_audit_logs(
         if channel_type and row["channel_type"] != channel_type:
             continue
         if session_id and row["session_id"] != session_id:
+            continue
+        if event_type and row["event_type"] != event_type:
+            continue
+        if delivery_status and row["delivery_status"] != delivery_status:
             continue
         if normalized_query:
             haystack = " ".join(
@@ -794,6 +815,7 @@ def list_ai_conversations(
             "buyer_phone": conversation.buyer_phone,
             "status": conversation.status,
             "last_stage": conversation.last_stage,
+            "summary": conversation.summary,
             "last_message_at": conversation.last_message_at,
             "created_at": conversation.created_at,
         }
@@ -817,6 +839,26 @@ def list_ai_conversation_stage_options(
         q = q.filter(AIConversation.status == status)
     rows = q.filter(AIConversation.last_stage.isnot(None)).distinct().order_by(AIConversation.last_stage.asc()).all()
     return [str(last_stage) for last_stage, in rows if str(last_stage or "").strip()]
+
+
+def list_ai_audit_event_type_options(
+    db: Session,
+    *,
+    window_hours: int,
+    scope: str,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+) -> list[str]:
+    rows = fetch_ai_audit_logs(
+        db=db,
+        window_hours=window_hours,
+        scope=scope,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+        limit=500,
+    )
+    values = sorted({str(row["event_type"]) for row in rows if str(row.get("event_type") or "").strip()})
+    return values
 
 
 def get_ai_conversation_detail(db: Session, conversation_id: str) -> tuple[dict | None, list[dict]]:
@@ -2546,11 +2588,19 @@ def ai_operations_page(request: Request, db: Session = Depends(get_db)):
         return redirect_response
 
     window_hours = parse_log_window_hours(request.query_params.get("window_hours"))
+    selected_view = normalize_ai_operations_view(request.query_params.get("view"))
     scope = normalize_ai_log_scope(request.query_params.get("scope"))
     tenant_code = normalize_free_text_filter(request.query_params.get("tenant")) or None
     channel_type = normalize_ai_channel_type(request.query_params.get("channel")) or None
     session_id = normalize_free_text_filter(request.query_params.get("session")) or None
+    event_type = normalize_free_text_filter(request.query_params.get("event_type")) or None
+    delivery_status = normalize_delivery_status(request.query_params.get("delivery_status")) or None
     query = normalize_free_text_filter(request.query_params.get("q")) or None
+    if selected_view == "failed-deliveries":
+        scope = "handoffs"
+        delivery_status = "failed"
+    elif selected_view == "handoffs":
+        scope = "handoffs"
     rows = fetch_ai_audit_logs(
         db=db,
         window_hours=window_hours,
@@ -2558,7 +2608,16 @@ def ai_operations_page(request: Request, db: Session = Depends(get_db)):
         tenant_code=tenant_code,
         channel_type=channel_type,
         session_id=session_id,
+        event_type=event_type,
+        delivery_status=delivery_status,
         query=query,
+    )
+    event_type_options = list_ai_audit_event_type_options(
+        db=db,
+        window_hours=window_hours,
+        scope=scope,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
     )
     handoff_count = sum(1 for row in rows if row["action"] == "ai_handoff")
     event_count = sum(1 for row in rows if row["action"] == "ai_conversation_event")
@@ -2581,10 +2640,14 @@ def ai_operations_page(request: Request, db: Session = Depends(get_db)):
         failed_handoff_count=failed_handoff_count,
         selected_window_hours=window_hours,
         selected_scope=scope,
+        selected_view=selected_view,
         selected_tenant=tenant_code or "",
         selected_channel=channel_type or "",
         selected_session=session_id or "",
+        selected_event_type=event_type or "",
+        selected_delivery_status=delivery_status or "",
         selected_query=query or "",
+        event_type_options=event_type_options,
     )
     return templates.TemplateResponse("ai_operations.html", context)
 
@@ -2598,8 +2661,15 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
     tenant_code = normalize_free_text_filter(request.query_params.get("tenant")) or None
     channel_type = normalize_ai_channel_type(request.query_params.get("channel")) or None
     status = normalize_ai_conversation_status(request.query_params.get("status")) or None
+    selected_view = normalize_ai_conversations_view(request.query_params.get("view"))
     last_stage = normalize_ai_stage_filter(request.query_params.get("stage")) or None
     query = normalize_free_text_filter(request.query_params.get("q")) or None
+    if selected_view == "needs-attention":
+        status = "handoff"
+    elif selected_view == "open":
+        status = "open"
+    elif selected_view == "closed":
+        status = "closed"
     rows = list_ai_conversations(
         db,
         tenant_code=tenant_code,
@@ -2629,6 +2699,7 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
         handoff_count=handoff_count,
         closed_count=closed_count,
         stage_options=stage_options,
+        selected_view=selected_view,
         selected_tenant=tenant_code or "",
         selected_channel=channel_type or "",
         selected_status=status or "",
@@ -2662,6 +2733,13 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
     failed_handoff_count = sum(
         1 for row in operations if row["action"] == "ai_handoff" and row.get("delivery_status") == "failed"
     )
+    latest_handoff = next((row for row in operations if row["action"] == "ai_handoff"), None)
+    important_events = [
+        row
+        for row in operations
+        if row["action"] == "ai_handoff"
+        or row["event_type"] in {"handoff_triggered", "manager_attention_required", "conversation_state_changed"}
+    ][:8]
 
     context = build_admin_context(
         request,
@@ -2671,9 +2749,11 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
         conversation=conversation,
         messages=messages,
         operations=operations,
+        important_events=important_events,
         operation_count=len(operations),
         handoff_count=handoff_count,
         failed_handoff_count=failed_handoff_count,
+        latest_handoff=latest_handoff,
     )
     return templates.TemplateResponse("ai_conversation_detail.html", context)
 

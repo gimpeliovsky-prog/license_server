@@ -11,6 +11,11 @@
 </div>
 
 <div class="panel">
+  <div class="section-tabs">
+    <a class="button-ghost {% if selected_view == 'all' %}active{% endif %}" href="{{ request.url.include_query_params(view='all') }}">All Events</a>
+    <a class="button-ghost {% if selected_view == 'handoffs' %}active{% endif %}" href="{{ request.url.include_query_params(view='handoffs') }}">Handoffs</a>
+    <a class="button-ghost {% if selected_view == 'failed-deliveries' %}active{% endif %}" href="{{ request.url.include_query_params(view='failed-deliveries') }}">Failed Deliveries</a>
+  </div>
   <div class="stats-grid">
     <div class="stat-card">
       <div class="stat-label">Handoffs</div>
@@ -33,6 +38,7 @@
 
 <div class="panel">
   <form method="get" action="/admin-ui/ai-operations" class="grid-2" style="align-items: end;">
+    <input type="hidden" name="view" value="{{ selected_view }}">
     <div>
       <label for="window_hours">Period (hours)</label>
       <select id="window_hours" name="window_hours">
@@ -65,10 +71,30 @@
       </select>
     </div>
     <div>
+      <label for="delivery_status">Delivery status</label>
+      <select id="delivery_status" name="delivery_status">
+        <option value="" {% if not selected_delivery_status %}selected{% endif %}>All</option>
+        <option value="delivered" {% if selected_delivery_status == "delivered" %}selected{% endif %}>Delivered</option>
+        <option value="failed" {% if selected_delivery_status == "failed" %}selected{% endif %}>Failed</option>
+        <option value="not_configured" {% if selected_delivery_status == "not_configured" %}selected{% endif %}>Not configured</option>
+        <option value="skipped" {% if selected_delivery_status == "skipped" %}selected{% endif %}>Skipped</option>
+        <option value="pending" {% if selected_delivery_status == "pending" %}selected{% endif %}>Pending</option>
+      </select>
+    </div>
+    <div>
+      <label for="event_type">Event type</label>
+      <select id="event_type" name="event_type">
+        <option value="" {% if not selected_event_type %}selected{% endif %}>All</option>
+        {% for option in event_type_options %}
+        <option value="{{ option }}" {% if selected_event_type == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
       <label for="session">Session</label>
       <input id="session" type="text" name="session" value="{{ selected_session }}" placeholder="telegram:423663629">
     </div>
-    <div>
+    <div style="grid-column: 1 / -1;">
       <label for="q">Search</label>
       <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="reason, event, order, delivery">
     </div>
@@ -106,7 +132,15 @@
           <td style="font-family: monospace;">{{ row.created_at.isoformat() }}</td>
           <td>
             <div><code>{{ row.action }}</code></div>
-            <div class="muted">{{ row.event_type }}</div>
+            <div style="margin-top: 4px;">
+              {% if row.event_type in ["handoff_triggered", "manager_attention_required"] %}
+              <span class="badge badge-danger">{{ row.event_type }}</span>
+              {% elif row.event_type in ["conversation_state_changed", "sales_pipeline_handoff"] %}
+              <span class="badge badge-warning">{{ row.event_type }}</span>
+              {% else %}
+              <span class="badge badge-neutral">{{ row.event_type }}</span>
+              {% endif %}
+            </div>
           </td>
           <td>
             <div>{{ row.tenant_company_code }}</div>
@@ -126,6 +160,8 @@
             <span class="badge badge-danger">{{ row.delivery_status }}</span>
             {% elif row.delivery_status == "delivered" %}
             <span class="badge badge-success">{{ row.delivery_status }}</span>
+            {% elif row.delivery_status == "not_configured" %}
+            <span class="badge badge-warning">{{ row.delivery_status }}</span>
             {% else %}
             <span class="badge badge-neutral">{{ row.delivery_status }}</span>
             {% endif %}
@@ -138,7 +174,7 @@
             <a class="button-pill" href="/admin-ui/ai-conversations/{{ row.conversation_id }}">Open</a>
             {% else %}
             <span class="muted">Not stored</span>
-          {% endif %}
+            {% endif %}
           </td>
           <td class="muted">{{ row.reply_preview }}</td>
         </tr>
