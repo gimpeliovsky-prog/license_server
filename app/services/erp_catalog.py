@@ -216,6 +216,7 @@ def list_items(
     resolved_limit = max(1, min(200, int(limit or 200)))
     detailed_fields = ["item_code", "item_name", "item_group", "description", "standard_rate", "currency", "stock_uom", "image", "website_image"]
     basic_fields = ["item_code", "item_name", "item_group", "description", "stock_uom", "image", "website_image"]
+    selected_fields = detailed_fields if enrich else basic_fields
 
     def _fetch(filters: list[list[object]]) -> list[dict[str, Any]]:
         response = request_tenant_erpnext(
@@ -223,12 +224,12 @@ def list_items(
             "GET",
             "/api/resource/Item",
             params={
-                "fields": json.dumps(detailed_fields),
+                "fields": json.dumps(selected_fields),
                 "filters": json.dumps(filters),
                 "limit_page_length": resolved_limit,
             },
         )
-        if response.status_code == 417:
+        if enrich and response.status_code == 417:
             response = request_tenant_erpnext(
                 tenant,
                 "GET",
@@ -314,4 +315,3 @@ def get_item_detail(tenant, item_ref: str, *, lang: str | None = None) -> dict[s
         "sales_uom": sales_uom,
         "available_uoms": available_uoms,
     }
-
