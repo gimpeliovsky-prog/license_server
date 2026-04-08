@@ -68,6 +68,67 @@ def list_warehouses(
     return payload if isinstance(payload, list) else []
 
 
+def _warehouse_names(rows: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or row.get("warehouse") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def resolve_effective_warehouse(tenant, requested_warehouse: str | None = None) -> dict[str, Any]:
+    requested = str(requested_warehouse or "").strip()
+    stock_settings = get_stock_settings(tenant, fields='["default_warehouse"]')
+    default_warehouse = str(stock_settings.get("default_warehouse") or "").strip() or None
+    warehouse_rows = list_warehouses(tenant, fields='["name"]', limit_page_length=500)
+    known_warehouses = _warehouse_names(warehouse_rows)
+
+    if requested:
+        return {
+            "requested_warehouse": requested,
+            "effective_warehouse": requested,
+            "default_warehouse": default_warehouse,
+            "known_warehouses": known_warehouses,
+            "warehouse_resolution": "requested",
+            "needs_warehouse_selection": False,
+        }
+    if default_warehouse:
+        return {
+            "requested_warehouse": None,
+            "effective_warehouse": default_warehouse,
+            "default_warehouse": default_warehouse,
+            "known_warehouses": known_warehouses,
+            "warehouse_resolution": "default",
+            "needs_warehouse_selection": False,
+        }
+    if len(known_warehouses) == 1:
+        return {
+            "requested_warehouse": None,
+            "effective_warehouse": known_warehouses[0],
+            "default_warehouse": None,
+            "known_warehouses": known_warehouses,
+            "warehouse_resolution": "single",
+            "needs_warehouse_selection": False,
+        }
+    return {
+        "requested_warehouse": None,
+        "effective_warehouse": None,
+        "default_warehouse": default_warehouse,
+        "known_warehouses": known_warehouses,
+        "warehouse_resolution": "ambiguous",
+        "needs_warehouse_selection": bool(known_warehouses),
+    }
+
+
 def build_sales_order_status(order: dict[str, Any], *, order_name: str | None = None) -> dict[str, Any]:
     data = order if isinstance(order, dict) else {}
     docstatus = data.get("docstatus")
@@ -121,9 +182,25 @@ def get_item_availability(
     if not item_doc:
         raise HTTPException(status_code=404, detail=f"Item '{item_ref}' not found")
 
+    warehouse_context = resolve_effective_warehouse(tenant, warehouse)
+    effective_warehouse = warehouse_context.get("effective_warehouse")
+    if warehouse_context.get("needs_warehouse_selection"):
+        return {
+            "item_code": item_doc.get("item_code") or item_ref,
+            "item_name": item_doc.get("item_name"),
+            "stock_uom": item_doc.get("stock_uom"),
+            **warehouse_context,
+            "in_stock": None,
+            "total_actual_qty": None,
+            "total_reserved_qty": None,
+            "total_available_qty": None,
+            "warehouse_count": len(warehouse_context.get("known_warehouses") or []),
+            "warehouses": [],
+        }
+
     filters: list[list[object]] = [["item_code", "=", item_ref]]
-    if warehouse:
-        filters.append(["warehouse", "=", warehouse.strip()])
+    if effective_warehouse:
+        filters.append(["warehouse", "=", str(effective_warehouse).strip()])
 
     rows = get_bin_records(
         tenant,
@@ -173,7 +250,7 @@ def get_item_availability(
         "item_code": item_doc.get("item_code") or item_ref,
         "item_name": item_doc.get("item_name"),
         "stock_uom": item_doc.get("stock_uom"),
-        "requested_warehouse": warehouse.strip() if warehouse else None,
+        **warehouse_context,
         "in_stock": total_available > 0,
         "total_actual_qty": total_actual,
         "total_reserved_qty": total_reserved,
