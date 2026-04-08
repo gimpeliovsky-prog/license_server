@@ -1306,9 +1306,12 @@ def get_items(
     item_group: str | None = None,
     item_name: str | None = None,
     lang: str | None = None,
+    limit: int = 200,
+    enrich: bool = True,
     db: Session = Depends(get_db),
 ) -> dict:
     tenant = _get_tenant(db, company_code)
+    resolved_limit = max(1, min(200, int(limit or 200)))
     detailed_fields = ["item_code", "item_name", "item_group", "description", "standard_rate", "currency", "stock_uom", "image", "website_image"]
     basic_fields = ["item_code", "item_name", "item_group", "description", "stock_uom", "image", "website_image"]
 
@@ -1320,7 +1323,7 @@ def get_items(
             params={
                 "fields": json.dumps(detailed_fields),
                 "filters": json.dumps(filters),
-                "limit_page_length": 200,
+                "limit_page_length": resolved_limit,
             },
         )
         if resp.status_code == 417:
@@ -1331,7 +1334,7 @@ def get_items(
                 params={
                     "fields": json.dumps(basic_fields),
                     "filters": json.dumps(filters),
-                    "limit_page_length": 200,
+                    "limit_page_length": resolved_limit,
                 },
             )
         if resp.status_code != 200:
@@ -1353,6 +1356,9 @@ def get_items(
     if not items and item_group and not item_name:
         fallback_filters = [["disabled", "=", 0], ["item_name", "like", f"%{item_group}%"]]
         items = _fetch(fallback_filters)
+
+    if not enrich:
+        return {"items": items}
 
     for item in items:
         item_doc = _fetch_item_doc(tenant, item.get("item_code", ""))
