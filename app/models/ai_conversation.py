@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,6 +34,17 @@ class AIConversation(Base):
     first_customer_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    lead_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    lead_temperature: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    next_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    handoff_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sales_owner_status: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    quality_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_flags_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_event_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_delivery_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

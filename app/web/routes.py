@@ -517,6 +517,14 @@ def normalize_ai_conversation_status(value: str | None) -> str:
     return normalized if normalized in {"open", "handoff", "closed"} else ""
 
 
+def normalize_ai_lead_status(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def normalize_ai_owner_status(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
 def normalize_ai_stage_filter(value: str | None) -> str:
     return str(value or "").strip()
 
@@ -674,13 +682,14 @@ def fetch_ai_audit_logs(
         tenant_codes = {tenant_id: company_code for tenant_id, company_code in tenants}
 
     normalized_query = str(query or "").strip().lower()
+    requested_event_type = str(event_type or "").strip()
     rows: list[dict] = []
     conversation_keys: set[tuple[uuid.UUID, str]] = set()
     for record in records:
         meta = record.meta if isinstance(record.meta, dict) else {}
         payload = meta.get("payload") if isinstance(meta.get("payload"), dict) else {}
         delivery = meta.get("delivery") if isinstance(meta.get("delivery"), dict) else {}
-        event_type = str(meta.get("event_type") or "").strip()
+        row_event_type = str(meta.get("event_type") or "").strip()
         record_channel_type = str(meta.get("channel_type") or "").strip() or "-"
         channel_user_id = str(meta.get("channel_user_id") or "").strip() or "-"
         record_session_id = str(meta.get("session_id") or "").strip() or "-"
@@ -694,7 +703,7 @@ def fetch_ai_audit_logs(
         row = {
             "created_at": record.created_at,
             "action": record.action,
-            "event_type": event_type or record.action,
+            "event_type": row_event_type or record.action,
             "tenant_id": record.tenant_id,
             "tenant_company_code": tenant_codes.get(record.tenant_id) or "-",
             "channel_type": record_channel_type,
@@ -708,13 +717,16 @@ def fetch_ai_audit_logs(
             "delivery_status": delivery.get("status") or "-",
             "delivery_error": delivery.get("error") or "-",
             "reply_preview": payload.get("reply_preview") or payload.get("next_action") or "-",
+            "lead_id": (payload.get("lead_profile") or {}).get("lead_id") if isinstance(payload.get("lead_profile"), dict) else "-",
+            "lead_status": (payload.get("lead_profile") or {}).get("status") if isinstance(payload.get("lead_profile"), dict) else "-",
+            "sales_owner_status": (payload.get("lead_profile") or {}).get("sales_owner_status") if isinstance(payload.get("lead_profile"), dict) else "-",
             "conversation_id": None,
         }
         if channel_type and row["channel_type"] != channel_type:
             continue
         if session_id and row["session_id"] != session_id:
             continue
-        if event_type and row["event_type"] != event_type:
+        if requested_event_type and row["event_type"] != requested_event_type:
             continue
         if delivery_status and row["delivery_status"] != delivery_status:
             continue
@@ -733,6 +745,9 @@ def fetch_ai_audit_logs(
                     str(row["delivery_status"]),
                     str(row["delivery_error"]),
                     str(row["reply_preview"]),
+                    str(row["lead_id"]),
+                    str(row["lead_status"]),
+                    str(row["sales_owner_status"]),
                 ]
             ).lower()
             if normalized_query not in haystack:
@@ -769,6 +784,8 @@ def list_ai_conversations(
     tenant_code: str | None = None,
     channel_type: str | None = None,
     status: str | None = None,
+    lead_status: str | None = None,
+    owner_status: str | None = None,
     last_stage: str | None = None,
     query: str | None = None,
 ) -> list[dict]:
@@ -779,6 +796,10 @@ def list_ai_conversations(
         q = q.filter(AIConversation.channel_type == channel_type)
     if status:
         q = q.filter(AIConversation.status == status)
+    if lead_status:
+        q = q.filter(AIConversation.lead_status == lead_status)
+    if owner_status:
+        q = q.filter(AIConversation.sales_owner_status == owner_status)
     if last_stage:
         q = q.filter(AIConversation.last_stage == last_stage)
     if query:
@@ -789,6 +810,10 @@ def list_ai_conversations(
             | (AIConversation.erp_customer_id.ilike(like_query))
             | (AIConversation.buyer_name.ilike(like_query))
             | (AIConversation.buyer_phone.ilike(like_query))
+            | (AIConversation.lead_id.ilike(like_query))
+            | (AIConversation.lead_status.ilike(like_query))
+            | (AIConversation.next_action.ilike(like_query))
+            | (AIConversation.handoff_reason.ilike(like_query))
         )
     rows = (
         q.order_by(
@@ -814,6 +839,17 @@ def list_ai_conversations(
             "buyer_name": conversation.buyer_name,
             "buyer_phone": conversation.buyer_phone,
             "status": conversation.status,
+            "lead_id": conversation.lead_id,
+            "lead_status": conversation.lead_status,
+            "lead_temperature": conversation.lead_temperature,
+            "next_action": conversation.next_action,
+            "handoff_reason": conversation.handoff_reason,
+            "sales_owner_status": conversation.sales_owner_status,
+            "quality_score": conversation.quality_score,
+            "quality_flags_json": conversation.quality_flags_json,
+            "last_event_type": conversation.last_event_type,
+            "last_event_at": conversation.last_event_at,
+            "last_delivery_status": conversation.last_delivery_status,
             "last_stage": conversation.last_stage,
             "summary": conversation.summary,
             "last_message_at": conversation.last_message_at,
@@ -839,6 +875,36 @@ def list_ai_conversation_stage_options(
         q = q.filter(AIConversation.status == status)
     rows = q.filter(AIConversation.last_stage.isnot(None)).distinct().order_by(AIConversation.last_stage.asc()).all()
     return [str(last_stage) for last_stage, in rows if str(last_stage or "").strip()]
+
+
+def list_ai_conversation_lead_status_options(
+    db: Session,
+    *,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+) -> list[str]:
+    q = db.query(AIConversation.lead_status).join(Tenant, AIConversation.tenant_id == Tenant.id)
+    if tenant_code:
+        q = q.filter(Tenant.company_code == tenant_code)
+    if channel_type:
+        q = q.filter(AIConversation.channel_type == channel_type)
+    rows = q.filter(AIConversation.lead_status.isnot(None)).distinct().order_by(AIConversation.lead_status.asc()).all()
+    return [str(current_status) for current_status, in rows if str(current_status or "").strip()]
+
+
+def list_ai_conversation_owner_status_options(
+    db: Session,
+    *,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+) -> list[str]:
+    q = db.query(AIConversation.sales_owner_status).join(Tenant, AIConversation.tenant_id == Tenant.id)
+    if tenant_code:
+        q = q.filter(Tenant.company_code == tenant_code)
+    if channel_type:
+        q = q.filter(AIConversation.channel_type == channel_type)
+    rows = q.filter(AIConversation.sales_owner_status.isnot(None)).distinct().order_by(AIConversation.sales_owner_status.asc()).all()
+    return [str(current_status) for current_status, in rows if str(current_status or "").strip()]
 
 
 def list_ai_audit_event_type_options(
@@ -892,6 +958,17 @@ def get_ai_conversation_detail(db: Session, conversation_id: str) -> tuple[dict 
             "buyer_name": conversation.buyer_name,
             "buyer_phone": conversation.buyer_phone,
             "status": conversation.status,
+            "lead_id": conversation.lead_id,
+            "lead_status": conversation.lead_status,
+            "lead_temperature": conversation.lead_temperature,
+            "next_action": conversation.next_action,
+            "handoff_reason": conversation.handoff_reason,
+            "sales_owner_status": conversation.sales_owner_status,
+            "quality_score": conversation.quality_score,
+            "quality_flags_json": conversation.quality_flags_json,
+            "last_event_type": conversation.last_event_type,
+            "last_event_at": conversation.last_event_at,
+            "last_delivery_status": conversation.last_delivery_status,
             "last_stage": conversation.last_stage,
             "first_customer_message_at": conversation.first_customer_message_at,
             "last_message_at": conversation.last_message_at,
@@ -2661,6 +2738,8 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
     tenant_code = normalize_free_text_filter(request.query_params.get("tenant")) or None
     channel_type = normalize_ai_channel_type(request.query_params.get("channel")) or None
     status = normalize_ai_conversation_status(request.query_params.get("status")) or None
+    lead_status = normalize_ai_lead_status(request.query_params.get("lead_status")) or None
+    owner_status = normalize_ai_owner_status(request.query_params.get("owner_status")) or None
     selected_view = normalize_ai_conversations_view(request.query_params.get("view"))
     last_stage = normalize_ai_stage_filter(request.query_params.get("stage")) or None
     query = normalize_free_text_filter(request.query_params.get("q")) or None
@@ -2675,6 +2754,8 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
         tenant_code=tenant_code,
         channel_type=channel_type,
         status=status,
+        lead_status=lead_status,
+        owner_status=owner_status,
         last_stage=last_stage,
         query=query,
     )
@@ -2684,9 +2765,22 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
         channel_type=channel_type,
         status=status,
     )
+    lead_status_options = list_ai_conversation_lead_status_options(
+        db,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+    )
+    owner_status_options = list_ai_conversation_owner_status_options(
+        db,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+    )
     open_count = sum(1 for row in rows if row["status"] == "open")
     handoff_count = sum(1 for row in rows if row["status"] == "handoff")
     closed_count = sum(1 for row in rows if row["status"] == "closed")
+    quality_flagged_count = sum(
+        1 for row in rows if isinstance(row.get("quality_flags_json"), dict) and (row.get("quality_flags_json") or {}).get("flags")
+    )
 
     context = build_admin_context(
         request,
@@ -2698,11 +2792,16 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
         open_count=open_count,
         handoff_count=handoff_count,
         closed_count=closed_count,
+        quality_flagged_count=quality_flagged_count,
         stage_options=stage_options,
+        lead_status_options=lead_status_options,
+        owner_status_options=owner_status_options,
         selected_view=selected_view,
         selected_tenant=tenant_code or "",
         selected_channel=channel_type or "",
         selected_status=status or "",
+        selected_lead_status=lead_status or "",
+        selected_owner_status=owner_status or "",
         selected_stage=last_stage or "",
         selected_query=query or "",
     )
@@ -2740,6 +2839,11 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
         if row["action"] == "ai_handoff"
         or row["event_type"] in {"handoff_triggered", "manager_attention_required", "conversation_state_changed"}
     ][:8]
+    quality_flags = []
+    if isinstance(conversation.get("quality_flags_json"), dict):
+        quality_flags = [
+            str(flag) for flag in (conversation.get("quality_flags_json") or {}).get("flags", []) if str(flag or "").strip()
+        ]
 
     context = build_admin_context(
         request,
@@ -2754,6 +2858,7 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
         handoff_count=handoff_count,
         failed_handoff_count=failed_handoff_count,
         latest_handoff=latest_handoff,
+        quality_flags=quality_flags,
     )
     return templates.TemplateResponse("ai_conversation_detail.html", context)
 

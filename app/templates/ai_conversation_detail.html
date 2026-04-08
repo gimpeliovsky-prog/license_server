@@ -65,7 +65,31 @@
           {% endif %}
         </div>
         <div><strong>Last stage</strong><div class="muted">{{ conversation.last_stage or "-" }}</div></div>
+        <div><strong>Lead status</strong><div class="muted">{{ conversation.lead_status or "-" }}</div></div>
+        <div><strong>Lead temperature</strong><div class="muted">{{ conversation.lead_temperature or "-" }}</div></div>
+        <div><strong>Next action</strong><div class="muted">{{ conversation.next_action or "-" }}</div></div>
+        <div><strong>Last event</strong><div class="muted">{{ conversation.last_event_type or "-" }}{% if conversation.last_event_at %} · {{ conversation.last_event_at.isoformat() }}{% endif %}</div></div>
         <div><strong>Summary</strong><div class="muted">{{ conversation.summary or "-" }}</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Lead Runtime</h2>
+      <div class="stack">
+        <div><strong>Lead ID</strong><div class="muted" style="font-family: monospace;">{{ conversation.lead_id or "-" }}</div></div>
+        <div><strong>Owner status</strong><div class="muted">{{ conversation.sales_owner_status or "-" }}</div></div>
+        <div><strong>Handoff reason</strong><div class="muted">{{ conversation.handoff_reason or "-" }}</div></div>
+        <div><strong>Last delivery status</strong><div class="muted">{{ conversation.last_delivery_status or "-" }}</div></div>
+        <div><strong>Quality score</strong><div class="muted">{{ conversation.quality_score if conversation.quality_score is not none else "-" }}</div></div>
+        <div><strong>Quality flags</strong>
+          <div class="muted">
+            {% if quality_flags %}
+              {{ quality_flags | join(", ") }}
+            {% else %}
+              -
+            {% endif %}
+          </div>
+        </div>
       </div>
     </div>
 

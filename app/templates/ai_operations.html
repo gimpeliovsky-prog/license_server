@@ -121,6 +121,7 @@
           <th>Channel</th>
           <th>Session</th>
           <th>Reason / Event</th>
+          <th>Lead</th>
           <th>Delivery</th>
           <th>Conversation</th>
           <th>Preview</th>
@@ -154,6 +155,11 @@
           <td>
             <div>{{ row.reason }}</div>
             <div class="muted">{{ row.active_order_name }}</div>
+          </td>
+          <td>
+            <div>{{ row.lead_status or "-" }}</div>
+            <div class="muted" style="font-family: monospace;">{{ row.lead_id or "-" }}</div>
+            <div class="muted">{{ row.sales_owner_status or "-" }}</div>
           </td>
           <td>
             {% if row.delivery_status == "failed" %}

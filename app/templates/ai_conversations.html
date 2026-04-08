@@ -35,6 +35,10 @@
       <div class="stat-label">Closed</div>
       <div class="stat-value">{{ closed_count }}</div>
     </div>
+    <div class="stat-card">
+      <div class="stat-label">Quality Flagged</div>
+      <div class="stat-value">{{ quality_flagged_count }}</div>
+    </div>
   </div>
 </div>
 
@@ -72,9 +76,27 @@
         {% endfor %}
       </select>
     </div>
+    <div>
+      <label for="lead_status">Lead Status</label>
+      <select id="lead_status" name="lead_status">
+        <option value="" {% if not selected_lead_status %}selected{% endif %}>All</option>
+        {% for option in lead_status_options %}
+        <option value="{{ option }}" {% if selected_lead_status == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="owner_status">Owner Status</label>
+      <select id="owner_status" name="owner_status">
+        <option value="" {% if not selected_owner_status %}selected{% endif %}>All</option>
+        {% for option in owner_status_options %}
+        <option value="{{ option }}" {% if selected_owner_status == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div style="grid-column: 1 / -1;">
       <label for="q">Search</label>
-      <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="session, customer, phone, channel user">
+      <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="session, customer, phone, channel user, lead id">
     </div>
     <div class="inline" style="grid-column: 1 / -1; justify-content: flex-end;">
       <a class="button-pill" href="/admin-ui/ai-conversations">Reset</a>
@@ -97,6 +119,7 @@
           <th>Tenant</th>
           <th>Customer</th>
           <th>Channel</th>
+          <th>Lead</th>
           <th>Flow</th>
           <th>Session</th>
           <th></th>
@@ -120,6 +143,20 @@
             <div class="muted">{{ row.channel_user_id }}</div>
           </td>
           <td class="stack">
+            {% if row.lead_temperature == "hot" %}
+            <span class="badge badge-danger">{{ row.lead_temperature }}</span>
+            {% elif row.lead_temperature == "warm" %}
+            <span class="badge badge-warning">{{ row.lead_temperature }}</span>
+            {% else %}
+            <span class="badge badge-neutral">{{ row.lead_temperature or "-" }}</span>
+            {% endif %}
+            <span class="muted">{{ row.lead_status or "-" }}</span>
+            <span class="muted">{{ row.next_action or "-" }}</span>
+            {% if row.sales_owner_status %}
+            <span class="muted">owner: {{ row.sales_owner_status }}</span>
+            {% endif %}
+          </td>
+          <td class="stack">
             {% if row.status == "handoff" %}
             <span class="badge badge-danger">Needs Attention</span>
             {% elif row.status == "closed" %}
@@ -128,6 +165,12 @@
             <span class="badge badge-info">Open</span>
             {% endif %}
             <span class="muted">{{ row.last_stage or "-" }}</span>
+            {% if row.handoff_reason %}
+            <span class="muted">handoff: {{ row.handoff_reason }}</span>
+            {% endif %}
+            {% if row.quality_flags_json and row.quality_flags_json.flags %}
+            <span class="badge badge-warning">quality</span>
+            {% endif %}
             <span class="muted">{{ (row.summary[:110] ~ '...') if row.summary and row.summary|length > 110 else (row.summary or '-') }}</span>
           </td>
           <td style="font-family: monospace;">{{ row.session_id }}</td>

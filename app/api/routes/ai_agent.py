@@ -135,6 +135,13 @@ class AITranscriptMessageRequest(BaseModel):
     payload_json: dict[str, Any] = Field(default_factory=dict)
 
 
+def _safe_text(value: Any, *, limit: int = 255) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
 def _get_tenant(db: Session, company_code: str) -> Tenant:
     tenant = db.query(Tenant).filter(Tenant.company_code == company_code).first()
     if not tenant:
@@ -492,6 +499,117 @@ def _get_or_create_conversation(
     if stage:
         conversation.last_stage = stage
     return conversation
+
+
+def _quality_flags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _conversation_status_from_runtime(
+    *,
+    current_status: str | None,
+    message_type: str | None = None,
+    stage: str | None = None,
+    lead_status: str | None = None,
+    handoff_reason: str | None = None,
+    sales_owner_status: str | None = None,
+) -> str:
+    if message_type == "closed" or lead_status in {"won", "lost", "merged"}:
+        return "closed"
+    if message_type == "handoff" or stage == "handoff" or handoff_reason or lead_status == "handoff":
+        return "handoff"
+    if sales_owner_status in {"accepted", "delivered", "reassigned_requested"}:
+        return "handoff"
+    return current_status or "open"
+
+
+def _build_conversation_summary(
+    *,
+    conversation: AIConversation,
+    payload: dict[str, Any] | None,
+    content: str | None = None,
+) -> str | None:
+    payload = payload if isinstance(payload, dict) else {}
+    lead_profile = payload.get("lead_profile") if isinstance(payload.get("lead_profile"), dict) else {}
+    parts: list[str] = []
+    lead_status = _safe_text(lead_profile.get("status"), limit=32)
+    product_interest = _safe_text(lead_profile.get("product_interest"), limit=120)
+    next_action = _safe_text(lead_profile.get("next_action"), limit=64)
+    handoff_reason = _safe_text(payload.get("handoff_reason") or payload.get("reason") or conversation.handoff_reason, limit=64)
+    quality_flags = _quality_flags(payload.get("quality_flags"))
+    if lead_status:
+        parts.append(lead_status)
+    if product_interest:
+        parts.append(product_interest)
+    if next_action:
+        parts.append(f"next: {next_action}")
+    if handoff_reason:
+        parts.append(f"handoff: {handoff_reason}")
+    if quality_flags:
+        parts.append(f"quality: {', '.join(quality_flags[:2])}")
+    preview = _safe_text(content, limit=160)
+    if preview and not parts:
+        parts.append(preview)
+    return " | ".join(parts)[:500] if parts else conversation.summary
+
+
+def _sync_conversation_runtime_state(
+    *,
+    conversation: AIConversation,
+    payload: dict[str, Any] | None,
+    stage: str | None = None,
+    message_type: str | None = None,
+    content: str | None = None,
+    event_type: str | None = None,
+    delivery: dict[str, Any] | None = None,
+) -> None:
+    payload = payload if isinstance(payload, dict) else {}
+    lead_profile = payload.get("lead_profile") if isinstance(payload.get("lead_profile"), dict) else {}
+    if stage:
+        conversation.last_stage = stage
+    elif payload.get("stage"):
+        conversation.last_stage = _safe_text(payload.get("stage"), limit=64)
+
+    if lead_profile:
+        conversation.lead_id = _safe_text(lead_profile.get("lead_id"), limit=64) or conversation.lead_id
+        conversation.lead_status = _safe_text(lead_profile.get("status"), limit=32) or conversation.lead_status
+        conversation.lead_temperature = _safe_text(lead_profile.get("temperature"), limit=16) or conversation.lead_temperature
+        conversation.next_action = _safe_text(lead_profile.get("next_action"), limit=64) or conversation.next_action
+        conversation.sales_owner_status = _safe_text(lead_profile.get("sales_owner_status"), limit=64) or conversation.sales_owner_status
+        conversation.handoff_reason = _safe_text(payload.get("handoff_reason") or payload.get("reason") or conversation.handoff_reason, limit=64)
+    elif payload.get("reason"):
+        conversation.handoff_reason = _safe_text(payload.get("reason"), limit=64) or conversation.handoff_reason
+
+    quality_score = payload.get("quality_score", payload.get("conversation_quality_score"))
+    if isinstance(quality_score, (int, float)):
+        conversation.quality_score = int(quality_score)
+    quality_flags = _quality_flags(payload.get("quality_flags"))
+    if quality_flags:
+        conversation.quality_flags_json = {"flags": quality_flags}
+
+    if event_type:
+        conversation.last_event_type = _safe_text(event_type, limit=64)
+        conversation.last_event_at = utcnow()
+    if delivery:
+        delivery_status = _safe_text(delivery.get("status"), limit=32)
+        if delivery_status:
+            conversation.last_delivery_status = delivery_status
+
+    conversation.status = _conversation_status_from_runtime(
+        current_status=conversation.status,
+        message_type=message_type,
+        stage=conversation.last_stage,
+        lead_status=conversation.lead_status,
+        handoff_reason=conversation.handoff_reason,
+        sales_owner_status=conversation.sales_owner_status,
+    )
+    conversation.summary = _build_conversation_summary(
+        conversation=conversation,
+        payload=payload,
+        content=content,
+    )
 
 
 def _desk_form_url(base_url: str, doctype_route: str, docname: str | None) -> str | None:
@@ -963,6 +1081,23 @@ def create_conversation_event(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant = _get_tenant(db, company_code)
+    if payload.session_id and payload.channel_type and payload.channel_user_id:
+        conversation = _get_or_create_conversation(
+            db=db,
+            tenant=tenant,
+            session_id=payload.session_id,
+            channel_type=payload.channel_type,
+            channel_user_id=payload.channel_user_id,
+            buyer_identity_id=payload.buyer_identity_id,
+            stage=_safe_text(payload.payload_json.get("stage")) if isinstance(payload.payload_json, dict) else None,
+        )
+        _sync_conversation_runtime_state(
+            conversation=conversation,
+            payload=payload.payload_json,
+            stage=_safe_text(payload.payload_json.get("stage")) if isinstance(payload.payload_json, dict) else None,
+            event_type=payload.event_type,
+        )
+        db.commit()
     entry = _audit_ai_event(
         db,
         tenant,
@@ -1034,6 +1169,13 @@ def create_transcript_message(
         conversation.status = "closed"
     else:
         conversation.status = "open"
+    _sync_conversation_runtime_state(
+        conversation=conversation,
+        payload=payload.payload_json,
+        stage=payload.stage,
+        message_type=payload.message_type,
+        content=payload.content,
+    )
     db.commit()
     db.refresh(message)
     return {"created": True, "message_id": str(message.id), "deduplicated": False}
@@ -1064,6 +1206,23 @@ def create_handoff(
             **target_payload,
         },
     )
+    if payload.session_id:
+        conversation = _get_or_create_conversation(
+            db=db,
+            tenant=tenant,
+            session_id=payload.session_id,
+            channel_type=payload.channel_type,
+            channel_user_id=payload.channel_user_id,
+            buyer_identity_id=payload.buyer_identity_id,
+        )
+        _sync_conversation_runtime_state(
+            conversation=conversation,
+            payload=payload.payload_json,
+            message_type="handoff",
+            event_type="handoff_triggered",
+            delivery=delivery,
+        )
+        db.commit()
     entry = _audit_ai_event(
         db,
         tenant,
