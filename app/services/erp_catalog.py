@@ -1,12 +1,86 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import HTTPException
 
 from app.services.erpnext import absolute_media_url, request_tenant_erpnext
+
+
+_CATALOG_SCAN_PAGE_SIZE = 200
+_CATALOG_SCAN_MAX_ROWS = 2000
+
+
+def _normalize_catalog_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _catalog_match_tokens(value: str) -> list[str]:
+    return [token for token in re.split(r"[^0-9A-Za-zА-Яа-яЁё\u0590-\u05FF\u0600-\u06FF]+", value) if len(token) >= 2]
+
+
+def _item_matches_search(row: dict[str, Any], query: str | None) -> bool:
+    normalized_query = _normalize_catalog_text(query)
+    if not normalized_query:
+        return True
+    haystack = _normalize_catalog_text(
+        " ".join(
+            str(row.get(key) or "")
+            for key in ("item_code", "item_name", "custom_product_code", "item_group", "description")
+        )
+    )
+    if not haystack:
+        return False
+    if normalized_query in haystack:
+        return True
+    query_tokens = _catalog_match_tokens(normalized_query)
+    if not query_tokens:
+        return False
+    haystack_tokens = _catalog_match_tokens(haystack)
+    if not haystack_tokens:
+        return False
+    matched = sum(1 for token in query_tokens if any(token in candidate or candidate in token for candidate in haystack_tokens))
+    required = 1 if len(query_tokens) == 1 else min(2, len(query_tokens))
+    return matched >= required
+
+
+def _scan_items_locally(tenant, *, query: str, limit: int) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    scanned = 0
+    offset = 0
+    fields = ["item_code", "item_name", "custom_product_code", "item_group", "description", "stock_uom", "image", "website_image"]
+
+    while scanned < _CATALOG_SCAN_MAX_ROWS and len(matched) < limit:
+        response = request_tenant_erpnext(
+            tenant,
+            "GET",
+            "/api/resource/Item",
+            params={
+                "fields": json.dumps(fields),
+                "filters": json.dumps([["disabled", "=", 0]]),
+                "limit_start": offset,
+                "limit_page_length": _CATALOG_SCAN_PAGE_SIZE,
+            },
+        )
+        if response.status_code != 200:
+            break
+        payload = response.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or not rows:
+            break
+        for row in rows:
+            if isinstance(row, dict) and _item_matches_search(row, query):
+                matched.append(row)
+                if len(matched) >= limit:
+                    break
+        scanned += len(rows)
+        offset += len(rows)
+        if len(rows) < _CATALOG_SCAN_PAGE_SIZE:
+            break
+    return matched
 
 
 def fetch_item_doc(tenant, item_code: str) -> dict[str, Any] | None:
@@ -263,6 +337,10 @@ def list_items(
         items = _fetch([["disabled", "=", 0], ["item_name", "like", f"%{item_name}%"]])
     if not items and item_group and not item_name:
         items = _fetch([["disabled", "=", 0], ["item_name", "like", f"%{item_group}%"]])
+    if not items and item_name:
+        items = _scan_items_locally(tenant, query=item_name, limit=resolved_limit)
+    if not items and item_group and not item_name:
+        items = _scan_items_locally(tenant, query=item_group, limit=resolved_limit)
 
     if not enrich:
         return items
