@@ -1311,10 +1311,8 @@ def get_customers(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Customer", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Customer",
             params=params,
