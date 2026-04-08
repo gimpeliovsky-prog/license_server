@@ -228,6 +228,7 @@ def list_items(
             field_variants.append(ultra_minimal_fields)
 
         last_status = None
+        last_detail = ""
         for field_set in field_variants:
             response = request_tenant_erpnext(
                 tenant,
@@ -241,12 +242,15 @@ def list_items(
             )
             last_status = response.status_code
             if response.status_code != 200:
+                detail_text = response.text.strip()
+                last_detail = detail_text[:300] if detail_text else ""
                 continue
             payload = response.json()
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, list):
                 return data
-        raise HTTPException(status_code=502, detail=f"ERPNext returned {last_status}")
+        detail_suffix = f": {last_detail}" if last_detail else ""
+        raise HTTPException(status_code=502, detail=f"ERPNext returned {last_status}{detail_suffix}")
 
     filters = [["disabled", "=", 0]]
     if item_group:
