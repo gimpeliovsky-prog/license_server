@@ -216,35 +216,37 @@ def list_items(
     resolved_limit = max(1, min(200, int(limit or 200)))
     detailed_fields = ["item_code", "item_name", "item_group", "description", "standard_rate", "currency", "stock_uom", "image", "website_image"]
     basic_fields = ["item_code", "item_name", "item_group", "description", "stock_uom", "image", "website_image"]
-    selected_fields = detailed_fields if enrich else basic_fields
+    minimal_fields = ["item_code", "item_name", "custom_product_code"]
+    ultra_minimal_fields = ["item_code", "item_name"]
+    selected_fields = detailed_fields if enrich else minimal_fields
 
     def _fetch(filters: list[list[object]]) -> list[dict[str, Any]]:
-        response = request_tenant_erpnext(
-            tenant,
-            "GET",
-            "/api/resource/Item",
-            params={
-                "fields": json.dumps(selected_fields),
-                "filters": json.dumps(filters),
-                "limit_page_length": resolved_limit,
-            },
-        )
-        if enrich and response.status_code == 417:
+        field_variants: list[list[str]] = [selected_fields]
+        if enrich:
+            field_variants.append(basic_fields)
+        else:
+            field_variants.append(ultra_minimal_fields)
+
+        last_status = None
+        for field_set in field_variants:
             response = request_tenant_erpnext(
                 tenant,
                 "GET",
                 "/api/resource/Item",
                 params={
-                    "fields": json.dumps(basic_fields),
+                    "fields": json.dumps(field_set),
                     "filters": json.dumps(filters),
                     "limit_page_length": resolved_limit,
                 },
             )
-        if response.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"ERPNext returned {response.status_code}")
-        payload = response.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        return data if isinstance(data, list) else []
+            last_status = response.status_code
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                return data
+        raise HTTPException(status_code=502, detail=f"ERPNext returned {last_status}")
 
     filters = [["disabled", "=", 0]]
     if item_group:
