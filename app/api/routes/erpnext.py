@@ -21,7 +21,7 @@ from app.schemas import (
 )
 from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
-from app.services.erpnext import ERPNextError, default_fields, request_erpnext, request_tenant_erpnext
+from app.services.erpnext import ERPNextError, default_fields, request_tenant_erpnext
 from app.services.idempotency import build_request_hash, extract_idempotency_key, get_replay_if_match, store_response
 from app.models import ProcessJob, Tenant
 from app.services.picklist_process import (
@@ -197,10 +197,8 @@ def get_picklists(
     get_allowed_doctype("Pick List", allowlist)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Pick List",
             params=params,
@@ -222,10 +220,8 @@ def get_picklist(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Pick List", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/api/resource/Pick List/{safe_name}",
         )
@@ -247,10 +243,8 @@ def update_picklist(
     ensure_method_allowed("PUT", allowlist)
     get_allowed_doctype("Pick List", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "PUT",
             f"/api/resource/Pick List/{safe_name}",
             json_body=payload,
@@ -417,10 +411,8 @@ def get_bin(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Bin", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Bin",
             params=params,
@@ -444,10 +436,8 @@ def get_purchase_orders(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Purchase Order", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Purchase Order",
             params=params,
@@ -469,10 +459,8 @@ def get_purchase_order(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Purchase Order", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/api/resource/Purchase Order/{safe_name}",
         )
@@ -492,10 +480,8 @@ def create_picklist(
     ensure_method_allowed("POST", allowlist)
     get_allowed_doctype("Pick List", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "POST",
             "/api/resource/Pick List",
             json_body=payload,
@@ -1252,10 +1238,8 @@ def get_stock_settings(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Stock Settings", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Stock Settings/Stock Settings",
             params=params,
@@ -1280,10 +1264,8 @@ def get_warehouses(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Warehouse", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Warehouse",
             params=params,
@@ -1345,10 +1327,8 @@ def proxy_resource_collection(
     params = extract_params(request)
     json_body = payload if method in {"POST", "PUT", "PATCH"} else None
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             method,
             f"/api/resource/{safe_doctype}",
             params=params,
@@ -1384,10 +1364,8 @@ def proxy_resource_item(
     params = extract_params(request)
     json_body = payload if method in {"POST", "PUT", "PATCH"} else None
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             method,
             f"/api/resource/{safe_doctype}/{safe_name}",
             params=params,

@@ -206,10 +206,6 @@ def _normalize_phone(value: str | None) -> str | None:
     return normalized if len("".join(ch for ch in normalized if ch.isdigit())) >= 8 else None
 
 
-def _load_sales_history(tenant: Tenant, erp_customer_id: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    return load_sales_history(tenant, erp_customer_id)
-
-
 def _buyer_lookup_response(
     *,
     tenant: Tenant,
@@ -220,7 +216,7 @@ def _buyer_lookup_response(
     channel: str | None = None,
     recognized_via: str | None = None,
 ) -> BuyerLookupResponse:
-    sales_orders, sales_invoices = _load_sales_history(tenant, erp_customer_id)
+    sales_orders, sales_invoices = load_sales_history(tenant, erp_customer_id)
     return BuyerLookupResponse(
         found=True,
         erp_customer_name=erp_customer_name,
@@ -233,11 +229,6 @@ def _buyer_lookup_response(
         recent_sales_orders=sales_orders,
         recent_sales_invoices=sales_invoices,
     )
-
-
-def _resolve_erp_customer_by_phone(tenant: Tenant, phone: str | None) -> tuple[str | None, str | None]:
-    normalized_phone = _normalize_phone(phone)
-    return resolve_customer_by_phone(tenant, normalized_phone)
 
 
 def _upsert_buyer_identity(
@@ -867,7 +858,7 @@ def find_buyer_by_phone(company_code: str, phone: str, db: Session = Depends(get
             recognized_via="phone_identity",
         )
 
-    customer_id, customer_name = _resolve_erp_customer_by_phone(tenant, normalized_phone)
+    customer_id, customer_name = resolve_customer_by_phone(tenant, normalized_phone)
     if not customer_id:
         return BuyerLookupResponse(found=False)
     return _buyer_lookup_response(
@@ -897,7 +888,7 @@ def find_buyer_by_telegram(company_code: str, tg_chat_id: str, db: Session = Dep
     customer_id = identity.erp_customer_id
     customer_name = identity.full_name
     if identity.phone and not customer_id:
-        customer_id, customer_name = _resolve_erp_customer_by_phone(tenant, identity.phone)
+        customer_id, customer_name = resolve_customer_by_phone(tenant, _normalize_phone(identity.phone))
         if customer_id:
             identity.erp_customer_id = customer_id
             db.commit()
@@ -945,7 +936,7 @@ def resolve_buyer(
 
     candidate_phone = payload.phone or (channel_user_id if channel == "whatsapp" else None)
     normalized_phone = _normalize_phone(candidate_phone)
-    customer_id, customer_name = _resolve_erp_customer_by_phone(tenant, normalized_phone)
+    customer_id, customer_name = resolve_customer_by_phone(tenant, normalized_phone)
     if not customer_id:
         return BuyerLookupResponse(found=False)
 
@@ -973,7 +964,7 @@ def resolve_buyer(
 @router.get("/tenants/{company_code}/buyers/{erp_customer_id}/sales-history")
 def get_buyer_sales_history(company_code: str, erp_customer_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     tenant = _get_tenant(db, company_code)
-    sales_orders, sales_invoices = _load_sales_history(tenant, erp_customer_id)
+    sales_orders, sales_invoices = load_sales_history(tenant, erp_customer_id)
     return {
         "erp_customer_id": erp_customer_id,
         "recent_sales_orders": sales_orders,
