@@ -2,6 +2,7 @@ import json
 import logging
 from functools import lru_cache
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -18,6 +19,25 @@ class ERPNextValidationError(ERPNextError):
     def __init__(self, message: str, status_code: int = 400):
         super().__init__(message)
         self.status_code = status_code
+
+
+def request_tenant_erpnext(
+    tenant,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> httpx.Response:
+    return request_erpnext(
+        tenant.erpnext_url,
+        tenant.api_key,
+        tenant.api_secret,
+        method,
+        path,
+        params=params,
+        json_body=json_body,
+    )
 
 
 def normalize_erpnext_url(raw: str) -> str:
@@ -99,6 +119,37 @@ def validate_erpnext_credentials(base_url: str, api_key: str, api_secret: str) -
 
 def default_fields(fields: list[str]) -> str:
     return json.dumps(fields, separators=(",", ":"))
+
+
+def desk_form_url(base_url: str, doctype_route: str, docname: str | None) -> str | None:
+    if not docname:
+        return None
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return None
+    return f"{base}/app/{doctype_route}/{quote(docname, safe='')}"
+
+
+def printview_url(base_url: str, doctype: str, docname: str | None, format_name: str = "Standard") -> str | None:
+    if not docname:
+        return None
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return None
+    return (
+        f"{base}/api/method/frappe.utils.print_format.download_pdf?"
+        f"doctype={quote(doctype, safe='')}&name={quote(docname, safe='')}"
+        f"&format={quote(format_name, safe='')}&no_letterhead=0"
+    )
+
+
+def absolute_media_url(base_url: str, value: str | None) -> str | None:
+    path = str(value or "").strip()
+    if not path:
+        return None
+    if path.startswith(("http://", "https://")):
+        return path
+    return f"{(base_url or '').rstrip('/')}/{path.lstrip('/')}" if base_url else None
 
 
 @lru_cache

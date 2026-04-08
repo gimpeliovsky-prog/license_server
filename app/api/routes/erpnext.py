@@ -21,7 +21,7 @@ from app.schemas import (
 )
 from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
-from app.services.erpnext import ERPNextError, default_fields, request_erpnext
+from app.services.erpnext import ERPNextError, default_fields, request_erpnext, request_tenant_erpnext
 from app.services.idempotency import build_request_hash, extract_idempotency_key, get_replay_if_match, store_response
 from app.models import ProcessJob, Tenant
 from app.services.picklist_process import (
@@ -276,10 +276,8 @@ def get_items_by_product_code(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Item", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Item",
             params=params,
@@ -311,10 +309,8 @@ def get_items_all(
     get_allowed_doctype("Item", allowlist)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Item",
             params=params,
@@ -336,10 +332,8 @@ def get_item(
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Item", allowlist)
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/api/resource/Item/{safe_code}",
         )
@@ -363,10 +357,8 @@ def get_public_file(
         raise HTTPException(status_code=400, detail="File path is required")
     safe_path = quote(normalized, safe="/")
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/files/{safe_path}",
         )
@@ -390,10 +382,8 @@ def get_private_file(
         raise HTTPException(status_code=400, detail="File path is required")
     safe_path = quote(normalized, safe="/")
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/private/files/{safe_path}",
         )
@@ -1080,10 +1070,8 @@ def get_sales_orders(
     get_allowed_doctype("Sales Order", allowlist)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             "/api/resource/Sales Order",
             params=params,
@@ -1106,10 +1094,8 @@ def get_sales_order(
     get_allowed_doctype("Sales Order", allowlist)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "GET",
             f"/api/resource/Sales Order/{safe_name}",
         )
@@ -1141,10 +1127,8 @@ def create_sales_order(
             return build_proxy_response(replay.body, replay.status_code, replay.content_type, replayed=True)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "POST",
             "/api/resource/Sales Order",
             json_body=payload,
@@ -1203,10 +1187,8 @@ def update_sales_order(
             return build_proxy_response(replay.body, replay.status_code, replay.content_type, replayed=True)
 
     try:
-        response = request_erpnext(
-            context.tenant.erpnext_url,
-            context.tenant.api_key,
-            context.tenant.api_secret,
+        response = request_tenant_erpnext(
+            context.tenant,
             "PUT",
             f"/api/resource/Sales Order/{safe_name}",
             json_body=payload,

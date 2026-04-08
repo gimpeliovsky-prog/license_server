@@ -17,7 +17,18 @@ from app.models import AIConversation, AIConversationMessage, AuditLog, BuyerCha
 from app.models import LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.models.tenant_channel import TenantChannel
 from app.services.ai_handoff import dispatch_handoff
-from app.services.erpnext import ERPNextError, request_erpnext
+from app.services.erp_catalog import get_item_detail, list_items
+from app.services.erpnext import (
+    ERPNextError,
+    request_tenant_erpnext,
+)
+from app.services.erp_sales import (
+    build_sales_order_summary,
+    create_invoice_from_sales_order,
+    create_sales_order as create_sales_order_for_tenant,
+    fetch_sales_order_doc,
+    update_sales_order_items as update_sales_order_items_for_tenant,
+)
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.subscription import evaluate_subscription
 from app.utils.time import utcnow
@@ -158,7 +169,7 @@ def _subscription_active(tenant: Tenant) -> bool:
 
 def _erp(tenant: Tenant, method: str, path: str, **kwargs) -> Any:
     try:
-        return request_erpnext(tenant.erpnext_url, tenant.api_key, tenant.api_secret, method, path, **kwargs)
+        return request_tenant_erpnext(tenant, method, path, **kwargs)
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1311,175 +1322,41 @@ def get_items(
     db: Session = Depends(get_db),
 ) -> dict:
     tenant = _get_tenant(db, company_code)
-    resolved_limit = max(1, min(200, int(limit or 200)))
-    detailed_fields = ["item_code", "item_name", "item_group", "description", "standard_rate", "currency", "stock_uom", "image", "website_image"]
-    basic_fields = ["item_code", "item_name", "item_group", "description", "stock_uom", "image", "website_image"]
-
-    def _fetch(filters: list[list[object]]) -> list[dict]:
-        resp = _erp(
-            tenant,
-            "GET",
-            "/api/resource/Item",
-            params={
-                "fields": json.dumps(detailed_fields),
-                "filters": json.dumps(filters),
-                "limit_page_length": resolved_limit,
-            },
-        )
-        if resp.status_code == 417:
-            resp = _erp(
-                tenant,
-                "GET",
-                "/api/resource/Item",
-                params={
-                    "fields": json.dumps(basic_fields),
-                    "filters": json.dumps(filters),
-                    "limit_page_length": resolved_limit,
-                },
-            )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"ERPNext returned {resp.status_code}")
-        return resp.json().get("data", [])
-
-    filters = [["disabled", "=", 0]]
-    if item_group:
-        filters.append(["item_group", "=", item_group])
-    if item_name:
-        filters.append(["item_name", "like", f"%{item_name}%"])
-
-    items = _fetch(filters)
-
-    if not items and item_name:
-        fallback_filters = [["disabled", "=", 0], ["item_name", "like", f"%{item_name}%"]]
-        items = _fetch(fallback_filters)
-
-    if not items and item_group and not item_name:
-        fallback_filters = [["disabled", "=", 0], ["item_name", "like", f"%{item_group}%"]]
-        items = _fetch(fallback_filters)
-
-    if not enrich:
-        return {"items": items}
-
-    for item in items:
-        item_doc = _fetch_item_doc(tenant, item.get("item_code", ""))
-        translated_name = _fetch_item_translation(tenant, item.get("item_name"), lang)
-        image_url = _absolute_media_url(
-            tenant.erpnext_url,
-            (item_doc or {}).get("image") or (item_doc or {}).get("website_image") or item.get("image"),
-        )
-        price_rate, price_currency = _fetch_item_price(tenant, item.get("item_code"))
-        if item.get("standard_rate") in (None, "") and price_rate not in (None, ""):
-            item["standard_rate"] = price_rate
-        else:
-            item.setdefault("standard_rate", None)
-        if item.get("currency") in (None, "") and price_currency not in (None, ""):
-            item["currency"] = price_currency
-        else:
-            item.setdefault("currency", None)
-        stock_uom, sales_uom, available_uoms = _extract_item_uoms(item_doc or {}, item.get("stock_uom"))
-        item["translated_item_name"] = translated_name
-        item["display_item_name"] = translated_name or item.get("item_name")
-        item["image_url"] = image_url
-        item["stock_uom"] = stock_uom
-        item["stock_uom_label"] = _humanize_uom(stock_uom, "ru")
-        item["sales_uom"] = sales_uom
-        item["sales_uom_label"] = _humanize_uom(sales_uom, "ru")
-        for uom in available_uoms:
-            uom["display_name"] = _humanize_uom(uom.get("uom"), "ru")
-        item["available_uoms"] = available_uoms
-        item["non_stock_uoms"] = [uom for uom in available_uoms if not uom.get("is_stock_uom")]
-        item["customer_uom_summary"] = _customer_uom_summary(item["stock_uom"], item["non_stock_uoms"], "ru")
+    items = list_items(
+        tenant,
+        item_group=item_group,
+        item_name=item_name,
+        lang=lang,
+        limit=limit,
+        enrich=enrich,
+    )
     return {"items": items}
 
 
 @router.get("/tenants/{company_code}/items/{item_code}")
 def get_item(company_code: str, item_code: str, lang: str | None = None, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
-    item_doc = _resolve_item_doc(tenant, item_code)
-    if not item_doc:
+    item = get_item_detail(tenant, item_code, lang=lang)
+    if not item:
         raise HTTPException(status_code=404, detail=f"Item '{item_code}' not found")
-    stock_uom, sales_uom, available_uoms = _extract_item_uoms(item_doc, item_doc.get("stock_uom"))
-    translated_name = _fetch_item_translation(tenant, item_doc.get("item_name"), lang)
-    image_url = _absolute_media_url(
-        tenant.erpnext_url,
-        item_doc.get("image") or item_doc.get("website_image"),
-    )
-    price_rate, price_currency = _fetch_item_price(tenant, item_doc.get("item_code"))
-    return {
-        "item_code": item_doc.get("item_code"),
-        "item_name": item_doc.get("item_name"),
-        "translated_item_name": translated_name,
-        "display_item_name": translated_name or item_doc.get("item_name"),
-        "item_group": item_doc.get("item_group"),
-        "description": item_doc.get("description"),
-        "standard_rate": price_rate,
-        "currency": price_currency,
-        "image_url": image_url,
-        "stock_uom": stock_uom,
-        "sales_uom": sales_uom,
-        "available_uoms": available_uoms,
-    }
+    return item
 
 
 @router.post("/tenants/{company_code}/sales-orders", status_code=201)
 def create_sales_order(company_code: str, payload: CreateSalesOrderRequest, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
-    delivery_date = payload.delivery_date or utcnow().date().isoformat()
-    order_items: list[dict[str, Any]] = []
-    for item in payload.items:
-        item_doc = _resolve_item_doc(tenant, item.get("item_code"))
-        order_item = {
-            "item_code": (item_doc or {}).get("item_code") or item.get("item_code"),
-            "qty": item.get("qty"),
-        }
-        for optional_field in ("rate", "uom", "conversion_factor"):
-            value = item.get(optional_field)
-            if value not in (None, ""):
-                order_item[optional_field] = value
-        order_items.append(order_item)
-    resp = _erp(
+    return create_sales_order_for_tenant(
         tenant,
-        "POST",
-        "/api/resource/Sales Order",
-        json_body={
-            "customer": payload.customer,
-            "delivery_date": delivery_date,
-            "items": order_items,
-            "order_type": "Sales",
-        },
+        customer=payload.customer,
+        delivery_date=payload.delivery_date,
+        items=payload.items,
     )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=resp.json().get("exception", resp.text[:200]))
-    order = resp.json().get("data", {})
-    order_name = order.get("name")
-    return {
-        "name": order_name,
-        "status": order.get("status", "Draft"),
-        "grand_total": order.get("grand_total"),
-        "order_url": _desk_form_url(tenant.erpnext_url, "sales-order", order_name),
-        "order_print_url": _printview_url(tenant.erpnext_url, "Sales Order", order_name),
-    }
 
 
 @router.get("/tenants/{company_code}/sales-orders/{sales_order_name}")
 def get_sales_order(company_code: str, sales_order_name: str, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
-    resp = _erp(
-        tenant,
-        "GET",
-        f"/api/resource/Sales Order/{quote(sales_order_name, safe='')}",
-    )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Failed to load Sales Order {sales_order_name}")
-    order = resp.json().get("data", {})
-    order_name = order.get("name") or sales_order_name
-    return {
-        "name": order_name,
-        "status": order.get("status", "Draft"),
-        "grand_total": order.get("grand_total"),
-        "order_url": _desk_form_url(tenant.erpnext_url, "sales-order", order_name),
-        "order_print_url": _printview_url(tenant.erpnext_url, "Sales Order", order_name),
-    }
+    return build_sales_order_summary(tenant, fetch_sales_order_doc(tenant, sales_order_name), sales_order_name)
 
 
 @router.post("/tenants/{company_code}/sales-orders/{sales_order_name}/items")
@@ -1490,117 +1367,17 @@ def update_sales_order_items(
     db: Session = Depends(get_db),
 ) -> dict:
     tenant = _get_tenant(db, company_code)
-
-    def _load_order_doc() -> dict[str, Any]:
-        current_order = _erp(
-            tenant,
-            "GET",
-            f"/api/resource/Sales Order/{quote(sales_order_name, safe='')}",
-        )
-        if current_order.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Failed to load Sales Order {sales_order_name}")
-        order_doc = current_order.json().get("data", {})
-        if not isinstance(order_doc, dict):
-            raise HTTPException(status_code=502, detail="ERPNext returned invalid Sales Order payload")
-        return order_doc
-
-    def _build_save_doc(order_doc: dict[str, Any]) -> dict[str, Any]:
-        merged_items: list[dict[str, Any]] = []
-        for item in order_doc.get("items", []):
-            if isinstance(item, dict):
-                existing_item = _sanitize_existing_sales_order_item(item)
-                merged_items.append(existing_item)
-
-        for item in payload.items:
-            item_doc = _resolve_item_doc(tenant, item.get("item_code"))
-            normalized_source = dict(item)
-            if item_doc and item_doc.get("item_code"):
-                normalized_source["item_code"] = item_doc.get("item_code")
-            normalized_new = _build_new_sales_order_item(normalized_source)
-            if normalized_new:
-                normalized_new["parent"] = order_doc.get("name") or sales_order_name
-                normalized_new["docstatus"] = 0
-                normalized_new["idx"] = len(merged_items) + 1
-                merged_items.append(normalized_new)
-
-        save_doc: dict[str, Any] = {
-            "doctype": "Sales Order",
-            "name": order_doc.get("name") or sales_order_name,
-            "owner": order_doc.get("owner"),
-            "creation": order_doc.get("creation"),
-            "modified": order_doc.get("modified"),
-            "naming_series": order_doc.get("naming_series"),
-            "customer": order_doc.get("customer"),
-            "delivery_date": order_doc.get("delivery_date"),
-            "transaction_date": order_doc.get("transaction_date"),
-            "company": order_doc.get("company"),
-            "currency": order_doc.get("currency"),
-            "selling_price_list": order_doc.get("selling_price_list"),
-            "price_list_currency": order_doc.get("price_list_currency"),
-            "plc_conversion_rate": order_doc.get("plc_conversion_rate"),
-            "conversion_rate": order_doc.get("conversion_rate"),
-            "order_type": order_doc.get("order_type") or "Sales",
-            "items": merged_items,
-        }
-        return {key: value for key, value in save_doc.items() if value not in (None, "")}
-
-    order_doc = _load_order_doc()
-    save_doc = _build_save_doc(order_doc)
-    resp = _erp(tenant, "POST", "/api/method/frappe.client.save", json_body={"doc": save_doc})
-    if resp.status_code == 417:
-        resp = _erp(
-            tenant,
-            "POST",
-            "/api/method/frappe.client.save",
-            json_body={"doc": json.dumps(save_doc, ensure_ascii=False, default=str)},
-        )
-    if resp.status_code == 417 and "TimestampMismatchError" in resp.text:
-        order_doc = _load_order_doc()
-        save_doc = _build_save_doc(order_doc)
-        resp = _erp(tenant, "POST", "/api/method/frappe.client.save", json_body={"doc": save_doc})
-        if resp.status_code == 417:
-            resp = _erp(
-                tenant,
-                "POST",
-                "/api/method/frappe.client.save",
-                json_body={"doc": json.dumps(save_doc, ensure_ascii=False, default=str)},
-            )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=resp.json().get("exception", resp.text[:200]))
-
-    payload_data = resp.json()
-    order = payload_data.get("message") or payload_data.get("data") or {}
-    order_name = order.get("name") or sales_order_name
-    return {
-        "name": order_name,
-        "status": order.get("status", "Draft"),
-        "grand_total": order.get("grand_total"),
-        "order_url": _desk_form_url(tenant.erpnext_url, "sales-order", order_name),
-        "order_print_url": _printview_url(tenant.erpnext_url, "Sales Order", order_name),
-        "updated": True,
-    }
+    return update_sales_order_items_for_tenant(
+        tenant,
+        sales_order_name=sales_order_name,
+        items=payload.items,
+    )
 
 
 @router.post("/tenants/{company_code}/invoices", status_code=201)
 def create_invoice(company_code: str, payload: CreateInvoiceRequest, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
-    resp = _erp(
-        tenant,
-        "POST",
-        "/api/method/erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_invoice",
-        json_body={"source_name": payload.sales_order_name},
-    )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=resp.json().get("exception", resp.text[:200]))
-    inv = resp.json().get("message", {})
-    return {
-        "name": inv.get("name"),
-        "grand_total": inv.get("grand_total"),
-        "currency": inv.get("currency"),
-        "status": inv.get("status", "Draft"),
-        "due_date": inv.get("due_date"),
-        "invoice_url": _desk_form_url(tenant.erpnext_url, "sales-invoice", inv.get("name")),
-    }
+    return create_invoice_from_sales_order(tenant, sales_order_name=payload.sales_order_name)
 
 
 @router.post("/tenants/{company_code}/licenses", status_code=201)
