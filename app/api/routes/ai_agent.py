@@ -974,6 +974,7 @@ def get_items(
     lang: str | None = None,
     limit: int = 200,
     enrich: bool = True,
+    compact: bool = False,
     db: Session = Depends(get_db),
 ) -> dict:
     tenant = _get_tenant(db, company_code)
@@ -984,14 +985,15 @@ def get_items(
         lang=lang,
         limit=limit,
         enrich=enrich,
+        compact=compact,
     )
     return {"items": items}
 
 
 @router.get("/tenants/{company_code}/items/{item_code}")
-def get_item(company_code: str, item_code: str, lang: str | None = None, db: Session = Depends(get_db)) -> dict:
+def get_item(company_code: str, item_code: str, lang: str | None = None, compact: bool = False, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
-    item = get_item_detail(tenant, item_code, lang=lang)
+    item = get_item_detail(tenant, item_code, lang=lang, compact=compact)
     if not item:
         raise HTTPException(status_code=404, detail=f"Item '{item_code}' not found")
     return item

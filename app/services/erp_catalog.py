@@ -278,6 +278,43 @@ def customer_uom_summary(stock_uom: str | None, non_stock_uoms: list[dict[str, A
     return f"This product is sold in: {', '.join(all_labels)}."
 
 
+def _compact_catalog_uom(uom: dict[str, Any]) -> dict[str, Any]:
+    data = uom if isinstance(uom, dict) else {}
+    compact = {
+        "uom": data.get("uom"),
+        "conversion_factor": data.get("conversion_factor"),
+        "is_stock_uom": data.get("is_stock_uom"),
+        "display_name": data.get("display_name"),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+
+def compact_catalog_item(item: dict[str, Any]) -> dict[str, Any]:
+    data = item if isinstance(item, dict) else {}
+    available_uoms = [
+        _compact_catalog_uom(uom)
+        for uom in (data.get("available_uoms") if isinstance(data.get("available_uoms"), list) else [])
+        if isinstance(uom, dict)
+    ]
+    compact = {
+        "item_code": data.get("item_code"),
+        "item_name": data.get("item_name"),
+        "translated_item_name": data.get("translated_item_name"),
+        "display_item_name": data.get("display_item_name"),
+        "item_group": data.get("item_group"),
+        "description": data.get("description"),
+        "standard_rate": data.get("standard_rate"),
+        "currency": data.get("currency"),
+        "image_url": data.get("image_url"),
+        "stock_uom": data.get("stock_uom"),
+        "stock_uom_label": data.get("stock_uom_label"),
+        "sales_uom": data.get("sales_uom"),
+        "sales_uom_label": data.get("sales_uom_label"),
+        "available_uoms": available_uoms,
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+
 def list_items(
     tenant,
     *,
@@ -286,6 +323,7 @@ def list_items(
     lang: str | None = None,
     limit: int = 200,
     enrich: bool = True,
+    compact: bool = False,
 ) -> list[dict[str, Any]]:
     resolved_limit = max(1, min(200, int(limit or 200)))
     detailed_fields = ["item_code", "item_name", "item_group", "description", "standard_rate", "currency", "stock_uom", "image", "website_image"]
@@ -374,10 +412,12 @@ def list_items(
         item["available_uoms"] = available_uoms
         item["non_stock_uoms"] = [uom for uom in available_uoms if not uom.get("is_stock_uom")]
         item["customer_uom_summary"] = customer_uom_summary(item["stock_uom"], item["non_stock_uoms"], "ru")
+    if compact:
+        return [compact_catalog_item(item) for item in items if isinstance(item, dict)]
     return items
 
 
-def get_item_detail(tenant, item_ref: str, *, lang: str | None = None) -> dict[str, Any] | None:
+def get_item_detail(tenant, item_ref: str, *, lang: str | None = None, compact: bool = False) -> dict[str, Any] | None:
     item_doc = resolve_item_doc(tenant, item_ref)
     if not item_doc:
         return None
@@ -385,7 +425,7 @@ def get_item_detail(tenant, item_ref: str, *, lang: str | None = None) -> dict[s
     translated_name = fetch_item_translation(tenant, item_doc.get("item_name"), lang)
     image_url = absolute_media_url(tenant.erpnext_url, item_doc.get("image") or item_doc.get("website_image"))
     price_rate, price_currency = fetch_item_price(tenant, item_doc.get("item_code"))
-    return {
+    item = {
         "item_code": item_doc.get("item_code"),
         "item_name": item_doc.get("item_name"),
         "translated_item_name": translated_name,
@@ -399,3 +439,6 @@ def get_item_detail(tenant, item_ref: str, *, lang: str | None = None) -> dict[s
         "sales_uom": sales_uom,
         "available_uoms": available_uoms,
     }
+    if compact:
+        return compact_catalog_item(item)
+    return item
