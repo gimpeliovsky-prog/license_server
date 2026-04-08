@@ -29,6 +29,11 @@ from app.services.erp_sales import (
     fetch_sales_order_doc,
     update_sales_order_items as update_sales_order_items_for_tenant,
 )
+from app.services.erp_stock import (
+    get_sales_order_status as get_sales_order_status_for_tenant,
+    get_stock_settings as get_stock_settings_for_tenant,
+    list_warehouses as list_warehouses_for_tenant,
+)
 from app.services.license import fingerprint_license_key, hash_license_key
 from app.services.subscription import evaluate_subscription
 from app.utils.time import utcnow
@@ -969,6 +974,12 @@ def get_sales_order(company_code: str, sales_order_name: str, db: Session = Depe
     return build_sales_order_summary(tenant, fetch_sales_order_doc(tenant, sales_order_name), sales_order_name)
 
 
+@router.get("/tenants/{company_code}/sales-orders/{sales_order_name}/status")
+def get_sales_order_status(company_code: str, sales_order_name: str, db: Session = Depends(get_db)) -> dict:
+    tenant = _get_tenant(db, company_code)
+    return get_sales_order_status_for_tenant(tenant, sales_order_name)
+
+
 @router.post("/tenants/{company_code}/sales-orders/{sales_order_name}/items")
 def update_sales_order_items(
     company_code: str,
@@ -988,6 +999,18 @@ def update_sales_order_items(
 def create_invoice(company_code: str, payload: CreateInvoiceRequest, db: Session = Depends(get_db)) -> dict:
     tenant = _get_tenant(db, company_code)
     return create_invoice_from_sales_order(tenant, sales_order_name=payload.sales_order_name)
+
+
+@router.get("/tenants/{company_code}/stock-settings")
+def get_stock_settings(company_code: str, db: Session = Depends(get_db)) -> dict:
+    tenant = _get_tenant(db, company_code)
+    return {"data": get_stock_settings_for_tenant(tenant, fields='["default_warehouse"]')}
+
+
+@router.get("/tenants/{company_code}/warehouses")
+def get_warehouses(company_code: str, limit: int = 200, db: Session = Depends(get_db)) -> dict:
+    tenant = _get_tenant(db, company_code)
+    return {"data": list_warehouses_for_tenant(tenant, fields='["name"]', limit_page_length=limit)}
 
 
 @router.post("/tenants/{company_code}/licenses", status_code=201)

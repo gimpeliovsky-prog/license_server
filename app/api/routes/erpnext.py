@@ -22,6 +22,12 @@ from app.schemas import (
 from app.services.audit import write_audit_log
 from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, normalize_method
 from app.services.erpnext import ERPNextError, default_fields, request_tenant_erpnext
+from app.services.erp_stock import (
+    get_bin_records,
+    get_sales_order_status as get_sales_order_status_for_tenant,
+    get_stock_settings as get_stock_settings_for_tenant,
+    list_warehouses as list_warehouses_for_tenant,
+)
 from app.services.idempotency import build_request_hash, extract_idempotency_key, get_replay_if_match, store_response
 from app.models import ProcessJob, Tenant
 from app.services.picklist_process import (
@@ -395,32 +401,26 @@ def get_bin(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_STOCK_READ)
-    params = {
-        "filters": filters,
-        "fields": resolve_fields(
-            fields,
-            [
-                "actual_qty",
-                "reserved_qty",
-                "reserved_qty_for_production",
-                "reserved_qty_for_sub_contract",
-            ],
-        ),
-        "limit_page_length": 1,
-    }
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Bin", allowlist)
     try:
-        response = request_tenant_erpnext(
+        records = get_bin_records(
             context.tenant,
-            "GET",
-            "/api/resource/Bin",
-            params=params,
+            filters=filters,
+            fields=resolve_fields(
+                fields,
+                [
+                    "actual_qty",
+                    "reserved_qty",
+                    "reserved_qty_for_production",
+                    "reserved_qty_for_sub_contract",
+                ],
+            ),
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+    return JSONResponse(content={"data": records}, status_code=200)
 
 
 @router.get("/purchase-orders")
@@ -1091,6 +1091,22 @@ def get_sales_order(
     return build_proxy_response(response.content, response.status_code, response.headers.get("content-type"))
 
 
+@router.get("/sales-orders/{name}/status")
+def get_sales_order_status(
+    name: str,
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_SALES_ORDERS_READ)
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Sales Order", allowlist)
+    try:
+        data = get_sales_order_status_for_tenant(context.tenant, name)
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JSONResponse(content={"data": data}, status_code=200)
+
+
 @router.post("/sales-orders")
 def create_sales_order(
     request: Request,
@@ -1234,20 +1250,17 @@ def get_stock_settings(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_STOCK_READ)
-    params = {"fields": resolve_fields(fields, ["default_warehouse"])}
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Stock Settings", allowlist)
     try:
-        response = request_tenant_erpnext(
+        data = get_stock_settings_for_tenant(
             context.tenant,
-            "GET",
-            "/api/resource/Stock Settings/Stock Settings",
-            params=params,
+            fields=resolve_fields(fields, ["default_warehouse"]),
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+    return JSONResponse(content={"data": data}, status_code=200)
 
 
 @router.get("/warehouses")
@@ -1258,22 +1271,18 @@ def get_warehouses(
     context=Depends(get_erp_request_context),
 ):
     require_permissions(context, PERMISSION_WAREHOUSES_READ)
-    params = {"fields": resolve_fields(fields, ["name"])}
-    if limit_page_length is not None:
-        params["limit_page_length"] = limit_page_length
     ensure_method_allowed("GET", allowlist)
     get_allowed_doctype("Warehouse", allowlist)
     try:
-        response = request_tenant_erpnext(
+        data = list_warehouses_for_tenant(
             context.tenant,
-            "GET",
-            "/api/resource/Warehouse",
-            params=params,
+            fields=resolve_fields(fields, ["name"]),
+            limit_page_length=limit_page_length,
         )
     except ERPNextError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+    return JSONResponse(content={"data": data}, status_code=200)
 
 
 @router.get("/customers")
