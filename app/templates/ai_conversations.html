@@ -1,10 +1,39 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>AI Conversations</h1>
+<div class="panel">
+  <div class="inline" style="justify-content: space-between; align-items: start; flex-wrap: wrap;">
+    <div>
+      <h1 style="margin-bottom: 6px;">AI Conversations</h1>
+      <div class="muted">Primary inbox for reviewing AI dialogs, handoffs, and conversation state.</div>
+    </div>
+  </div>
+</div>
 
 <div class="panel">
-  <form method="get" action="/admin-ui/ai-conversations" class="inline" style="flex-wrap: wrap; align-items: end;">
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total</div>
+      <div class="stat-value">{{ total_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Needs Attention</div>
+      <div class="stat-value">{{ handoff_count }}</div>
+      <div class="muted">status=handoff</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Open</div>
+      <div class="stat-value">{{ open_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Closed</div>
+      <div class="stat-value">{{ closed_count }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <form method="get" action="/admin-ui/ai-conversations" class="grid-2" style="align-items: end;">
     <div>
       <label for="tenant">Tenant</label>
       <input id="tenant" type="text" name="tenant" value="{{ selected_tenant }}" placeholder="company_code">
@@ -18,36 +47,61 @@
         <option value="webchat" {% if selected_channel == "webchat" %}selected{% endif %}>Webchat</option>
       </select>
     </div>
-    <div style="min-width: 260px;">
+    <div>
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="" {% if not selected_status %}selected{% endif %}>All</option>
+        <option value="open" {% if selected_status == "open" %}selected{% endif %}>Open</option>
+        <option value="handoff" {% if selected_status == "handoff" %}selected{% endif %}>Handoff</option>
+        <option value="closed" {% if selected_status == "closed" %}selected{% endif %}>Closed</option>
+      </select>
+    </div>
+    <div>
+      <label for="stage">Last Stage</label>
+      <select id="stage" name="stage">
+        <option value="" {% if not selected_stage %}selected{% endif %}>All</option>
+        {% for stage in stage_options %}
+        <option value="{{ stage }}" {% if selected_stage == stage %}selected{% endif %}>{{ stage }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="grid-column: 1 / -1;">
       <label for="q">Search</label>
       <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="session, customer, phone, channel user">
     </div>
-    <div>
+    <div class="inline" style="grid-column: 1 / -1; justify-content: flex-end;">
+      <a class="button-pill" href="/admin-ui/ai-conversations">Reset</a>
       <button type="submit" class="button-compact">Apply</button>
     </div>
   </form>
 </div>
 
 <div class="panel">
-  <h2>Sessions</h2>
+  <div class="inline" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
+    <h2 style="margin-bottom: 0;">Conversation Inbox</h2>
+    <div class="muted">Handoff sessions are sorted first.</div>
+  </div>
   {% if rows %}
   <div class="table-scroll">
     <table class="table-plain-header">
       <thead>
         <tr>
-          <th>Last message</th>
+          <th>Last activity</th>
           <th>Tenant</th>
           <th>Customer</th>
           <th>Channel</th>
+          <th>Flow</th>
           <th>Session</th>
-          <th>Status</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
         <tr>
-          <td style="font-family: monospace;">{{ row.last_message_at.isoformat() if row.last_message_at else "-" }}</td>
+          <td style="font-family: monospace;">
+            <div>{{ row.last_message_at.isoformat() if row.last_message_at else "-" }}</div>
+            <div class="muted">{{ row.created_at.isoformat() if row.created_at else "-" }}</div>
+          </td>
           <td>{{ row.tenant_company_code }}</td>
           <td>
             <div>{{ row.buyer_name or "-" }}</div>
@@ -58,11 +112,17 @@
             <div>{{ row.channel_type }}</div>
             <div class="muted">{{ row.channel_user_id }}</div>
           </td>
-          <td style="font-family: monospace;">{{ row.session_id }}</td>
-          <td>
-            <div>{{ row.status }}</div>
-            <div class="muted">{{ row.last_stage or "-" }}</div>
+          <td class="stack">
+            {% if row.status == "handoff" %}
+            <span class="badge badge-danger">Needs Attention</span>
+            {% elif row.status == "closed" %}
+            <span class="badge badge-success">Closed</span>
+            {% else %}
+            <span class="badge badge-info">Open</span>
+            {% endif %}
+            <span class="muted">{{ row.last_stage or "-" }}</span>
           </td>
+          <td style="font-family: monospace;">{{ row.session_id }}</td>
           <td><a class="button-pill" href="/admin-ui/ai-conversations/{{ row.id }}">Open</a></td>
         </tr>
         {% endfor %}
@@ -70,7 +130,7 @@
     </table>
   </div>
   {% else %}
-  <p class="muted">No AI conversations found.</p>
+  <p class="muted">No AI conversations found for the selected filters.</p>
   {% endif %}
 </div>
 {% endblock %}

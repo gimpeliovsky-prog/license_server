@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+from sqlalchemy import case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -505,6 +506,24 @@ def normalize_ai_log_scope(value: str | None) -> str:
     normalized = str(value or "all").strip().lower()
     return normalized if normalized in AI_LOG_SCOPE_OPTIONS else "all"
 
+
+def normalize_ai_channel_type(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"telegram", "whatsapp", "webchat"} else ""
+
+
+def normalize_ai_conversation_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"open", "handoff", "closed"} else ""
+
+
+def normalize_ai_stage_filter(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def normalize_free_text_filter(value: str | None) -> str:
+    return str(value or "").strip()
+
 def parse_auto_refresh(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -597,6 +616,10 @@ def fetch_ai_audit_logs(
     *,
     window_hours: int,
     scope: str,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+    session_id: str | None = None,
+    query: str | None = None,
     limit: int = 200,
 ) -> list[dict]:
     if scope == "handoffs":
@@ -607,14 +630,25 @@ def fetch_ai_audit_logs(
         actions = AI_AUDIT_ACTIONS
 
     since_time = utcnow() - timedelta(hours=window_hours)
-    records = (
+    record_query = (
         db.query(AuditLog)
         .filter(AuditLog.created_at >= since_time)
         .filter(AuditLog.action.in_(sorted(actions)))
         .order_by(AuditLog.created_at.desc())
-        .limit(limit)
-        .all()
     )
+    if tenant_code:
+        tenant_ids = [
+            tenant_id
+            for tenant_id, in db.query(Tenant.id).filter(Tenant.company_code == tenant_code).all()
+        ]
+        if not tenant_ids:
+            return []
+        record_query = record_query.filter(AuditLog.tenant_id.in_(tenant_ids))
+
+    raw_limit = limit
+    if channel_type or session_id or query:
+        raw_limit = max(limit * 8, 1000)
+    records = record_query.limit(raw_limit).all()
 
     tenant_ids = list({record.tenant_id for record in records if record.tenant_id})
     tenant_codes: dict[uuid.UUID, str] = {}
@@ -622,15 +656,17 @@ def fetch_ai_audit_logs(
         tenants = db.query(Tenant.id, Tenant.company_code).filter(Tenant.id.in_(tenant_ids)).all()
         tenant_codes = {tenant_id: company_code for tenant_id, company_code in tenants}
 
+    normalized_query = str(query or "").strip().lower()
     rows: list[dict] = []
+    conversation_keys: set[tuple[uuid.UUID, str]] = set()
     for record in records:
         meta = record.meta if isinstance(record.meta, dict) else {}
         payload = meta.get("payload") if isinstance(meta.get("payload"), dict) else {}
         delivery = meta.get("delivery") if isinstance(meta.get("delivery"), dict) else {}
         event_type = str(meta.get("event_type") or "").strip()
-        channel_type = str(meta.get("channel_type") or "").strip() or "-"
+        record_channel_type = str(meta.get("channel_type") or "").strip() or "-"
         channel_user_id = str(meta.get("channel_user_id") or "").strip() or "-"
-        session_id = str(meta.get("session_id") or "").strip() or "-"
+        record_session_id = str(meta.get("session_id") or "").strip() or "-"
         reason = str(meta.get("reason") or payload.get("reason") or payload.get("handoff_reason") or "").strip() or "-"
         active_order_name = (
             payload.get("active_order_name")
@@ -638,26 +674,70 @@ def fetch_ai_audit_logs(
             or payload.get("sales_order_name")
             or "-"
         )
-        rows.append(
-            {
-                "created_at": record.created_at,
-                "action": record.action,
-                "event_type": event_type or record.action,
-                "tenant_id": record.tenant_id,
-                "tenant_company_code": tenant_codes.get(record.tenant_id) or "-",
-                "channel_type": channel_type,
-                "channel_user_id": channel_user_id,
-                "session_id": session_id,
-                "reason": reason,
-                "active_order_name": active_order_name,
-                "payload": payload,
-                "target_type": payload.get("handoff_target_type") or "-",
-                "target_destination": payload.get("handoff_target_destination") or "-",
-                "delivery_status": delivery.get("status") or "-",
-                "delivery_error": delivery.get("error") or "-",
-                "reply_preview": payload.get("reply_preview") or payload.get("next_action") or "-",
-            }
+        row = {
+            "created_at": record.created_at,
+            "action": record.action,
+            "event_type": event_type or record.action,
+            "tenant_id": record.tenant_id,
+            "tenant_company_code": tenant_codes.get(record.tenant_id) or "-",
+            "channel_type": record_channel_type,
+            "channel_user_id": channel_user_id,
+            "session_id": record_session_id,
+            "reason": reason,
+            "active_order_name": active_order_name,
+            "payload": payload,
+            "target_type": payload.get("handoff_target_type") or "-",
+            "target_destination": payload.get("handoff_target_destination") or "-",
+            "delivery_status": delivery.get("status") or "-",
+            "delivery_error": delivery.get("error") or "-",
+            "reply_preview": payload.get("reply_preview") or payload.get("next_action") or "-",
+            "conversation_id": None,
+        }
+        if channel_type and row["channel_type"] != channel_type:
+            continue
+        if session_id and row["session_id"] != session_id:
+            continue
+        if normalized_query:
+            haystack = " ".join(
+                [
+                    str(row["tenant_company_code"]),
+                    str(row["channel_type"]),
+                    str(row["channel_user_id"]),
+                    str(row["session_id"]),
+                    str(row["reason"]),
+                    str(row["event_type"]),
+                    str(row["active_order_name"]),
+                    str(row["target_type"]),
+                    str(row["target_destination"]),
+                    str(row["delivery_status"]),
+                    str(row["delivery_error"]),
+                    str(row["reply_preview"]),
+                ]
+            ).lower()
+            if normalized_query not in haystack:
+                continue
+        rows.append(row)
+        if record.tenant_id and row["session_id"] != "-":
+            conversation_keys.add((record.tenant_id, row["session_id"]))
+        if len(rows) >= limit:
+            break
+
+    if conversation_keys:
+        conversation_rows = (
+            db.query(AIConversation.id, AIConversation.tenant_id, AIConversation.session_id)
+            .filter(
+                AIConversation.tenant_id.in_([tenant_id for tenant_id, _ in conversation_keys]),
+                AIConversation.session_id.in_([current_session_id for _, current_session_id in conversation_keys]),
+            )
+            .all()
         )
+        conversation_ids = {
+            (tenant_id, current_session_id): str(conversation_id)
+            for conversation_id, tenant_id, current_session_id in conversation_rows
+        }
+        for row in rows:
+            if row["tenant_id"] and row["session_id"] != "-":
+                row["conversation_id"] = conversation_ids.get((row["tenant_id"], row["session_id"]))
     return rows
 
 
@@ -667,6 +747,8 @@ def list_ai_conversations(
     limit: int = 200,
     tenant_code: str | None = None,
     channel_type: str | None = None,
+    status: str | None = None,
+    last_stage: str | None = None,
     query: str | None = None,
 ) -> list[dict]:
     q = db.query(AIConversation, Tenant.company_code).join(Tenant, AIConversation.tenant_id == Tenant.id)
@@ -674,6 +756,10 @@ def list_ai_conversations(
         q = q.filter(Tenant.company_code == tenant_code)
     if channel_type:
         q = q.filter(AIConversation.channel_type == channel_type)
+    if status:
+        q = q.filter(AIConversation.status == status)
+    if last_stage:
+        q = q.filter(AIConversation.last_stage == last_stage)
     if query:
         like_query = f"%{query}%"
         q = q.filter(
@@ -683,7 +769,19 @@ def list_ai_conversations(
             | (AIConversation.buyer_name.ilike(like_query))
             | (AIConversation.buyer_phone.ilike(like_query))
         )
-    rows = q.order_by(AIConversation.last_message_at.desc().nullslast(), AIConversation.created_at.desc()).limit(limit).all()
+    rows = (
+        q.order_by(
+            case(
+                (AIConversation.status == "handoff", 0),
+                (AIConversation.status == "open", 1),
+                else_=2,
+            ),
+            AIConversation.last_message_at.desc().nullslast(),
+            AIConversation.created_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
     return [
         {
             "id": str(conversation.id),
@@ -701,6 +799,24 @@ def list_ai_conversations(
         }
         for conversation, company_code in rows
     ]
+
+
+def list_ai_conversation_stage_options(
+    db: Session,
+    *,
+    tenant_code: str | None = None,
+    channel_type: str | None = None,
+    status: str | None = None,
+) -> list[str]:
+    q = db.query(AIConversation.last_stage).join(Tenant, AIConversation.tenant_id == Tenant.id)
+    if tenant_code:
+        q = q.filter(Tenant.company_code == tenant_code)
+    if channel_type:
+        q = q.filter(AIConversation.channel_type == channel_type)
+    if status:
+        q = q.filter(AIConversation.status == status)
+    rows = q.filter(AIConversation.last_stage.isnot(None)).distinct().order_by(AIConversation.last_stage.asc()).all()
+    return [str(last_stage) for last_stage, in rows if str(last_stage or "").strip()]
 
 
 def get_ai_conversation_detail(db: Session, conversation_id: str) -> tuple[dict | None, list[dict]]:
@@ -2431,10 +2547,18 @@ def ai_operations_page(request: Request, db: Session = Depends(get_db)):
 
     window_hours = parse_log_window_hours(request.query_params.get("window_hours"))
     scope = normalize_ai_log_scope(request.query_params.get("scope"))
+    tenant_code = normalize_free_text_filter(request.query_params.get("tenant")) or None
+    channel_type = normalize_ai_channel_type(request.query_params.get("channel")) or None
+    session_id = normalize_free_text_filter(request.query_params.get("session")) or None
+    query = normalize_free_text_filter(request.query_params.get("q")) or None
     rows = fetch_ai_audit_logs(
         db=db,
         window_hours=window_hours,
         scope=scope,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+        session_id=session_id,
+        query=query,
     )
     handoff_count = sum(1 for row in rows if row["action"] == "ai_handoff")
     event_count = sum(1 for row in rows if row["action"] == "ai_conversation_event")
@@ -2457,6 +2581,10 @@ def ai_operations_page(request: Request, db: Session = Depends(get_db)):
         failed_handoff_count=failed_handoff_count,
         selected_window_hours=window_hours,
         selected_scope=scope,
+        selected_tenant=tenant_code or "",
+        selected_channel=channel_type or "",
+        selected_session=session_id or "",
+        selected_query=query or "",
     )
     return templates.TemplateResponse("ai_operations.html", context)
 
@@ -2467,10 +2595,28 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
     if redirect_response:
         return redirect_response
 
-    tenant_code = str(request.query_params.get("tenant") or "").strip() or None
-    channel_type = str(request.query_params.get("channel") or "").strip() or None
-    query = str(request.query_params.get("q") or "").strip() or None
-    rows = list_ai_conversations(db, tenant_code=tenant_code, channel_type=channel_type, query=query)
+    tenant_code = normalize_free_text_filter(request.query_params.get("tenant")) or None
+    channel_type = normalize_ai_channel_type(request.query_params.get("channel")) or None
+    status = normalize_ai_conversation_status(request.query_params.get("status")) or None
+    last_stage = normalize_ai_stage_filter(request.query_params.get("stage")) or None
+    query = normalize_free_text_filter(request.query_params.get("q")) or None
+    rows = list_ai_conversations(
+        db,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+        status=status,
+        last_stage=last_stage,
+        query=query,
+    )
+    stage_options = list_ai_conversation_stage_options(
+        db,
+        tenant_code=tenant_code,
+        channel_type=channel_type,
+        status=status,
+    )
+    open_count = sum(1 for row in rows if row["status"] == "open")
+    handoff_count = sum(1 for row in rows if row["status"] == "handoff")
+    closed_count = sum(1 for row in rows if row["status"] == "closed")
 
     context = build_admin_context(
         request,
@@ -2478,8 +2624,15 @@ def ai_conversations_page(request: Request, db: Session = Depends(get_db)):
         "licensing",
         "ai-conversations",
         rows=rows,
+        total_count=len(rows),
+        open_count=open_count,
+        handoff_count=handoff_count,
+        closed_count=closed_count,
+        stage_options=stage_options,
         selected_tenant=tenant_code or "",
         selected_channel=channel_type or "",
+        selected_status=status or "",
+        selected_stage=last_stage or "",
         selected_query=query or "",
     )
     return templates.TemplateResponse("ai_conversations.html", context)
@@ -2496,6 +2649,20 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
         set_flash(request, error="AI conversation not found.")
         return redirect_to("/admin-ui/ai-conversations")
 
+    operations = fetch_ai_audit_logs(
+        db=db,
+        window_hours=24 * 7,
+        scope="all",
+        tenant_code=conversation["tenant_company_code"],
+        channel_type=conversation["channel_type"],
+        session_id=conversation["session_id"],
+        limit=50,
+    )
+    handoff_count = sum(1 for row in operations if row["action"] == "ai_handoff")
+    failed_handoff_count = sum(
+        1 for row in operations if row["action"] == "ai_handoff" and row.get("delivery_status") == "failed"
+    )
+
     context = build_admin_context(
         request,
         "AI Conversation",
@@ -2503,6 +2670,10 @@ def ai_conversation_detail_page(conversation_id: str, request: Request, db: Sess
         "ai-conversations",
         conversation=conversation,
         messages=messages,
+        operations=operations,
+        operation_count=len(operations),
+        handoff_count=handoff_count,
+        failed_handoff_count=failed_handoff_count,
     )
     return templates.TemplateResponse("ai_conversation_detail.html", context)
 

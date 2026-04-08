@@ -1,51 +1,89 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>AI Operations</h1>
-
 <div class="panel">
-  <h2>Overview</h2>
-  <div class="grid-2">
+  <div class="inline" style="justify-content: space-between; align-items: start; flex-wrap: wrap;">
     <div>
-      <strong>Handoffs</strong>
-      <div style="font-size: 28px; margin-top: 6px;">{{ handoff_count }}</div>
-    </div>
-    <div>
-      <strong>Conversation events</strong>
-      <div style="font-size: 28px; margin-top: 6px;">{{ event_count }}</div>
-    </div>
-    <div>
-      <strong>Delivered handoffs</strong>
-      <div style="font-size: 28px; margin-top: 6px;">{{ delivered_handoff_count }}</div>
-    </div>
-    <div>
-      <strong>Failed handoffs</strong>
-      <div style="font-size: 28px; margin-top: 6px;">{{ failed_handoff_count }}</div>
+      <h1 style="margin-bottom: 6px;">AI Operations</h1>
+      <div class="muted">Runtime event explorer for handoffs, delivery issues, and raw AI audit events.</div>
     </div>
   </div>
 </div>
 
 <div class="panel">
-  <h2>Audit Feed</h2>
-  <form method="get" action="/admin-ui/ai-operations" class="inline" style="margin-bottom: 12px;">
-    <label for="window_hours">Period (hours)</label>
-    <select id="window_hours" name="window_hours">
-      <option value="1" {% if selected_window_hours == 1 %}selected{% endif %}>1</option>
-      <option value="6" {% if selected_window_hours == 6 %}selected{% endif %}>6</option>
-      <option value="24" {% if selected_window_hours == 24 %}selected{% endif %}>24</option>
-      <option value="72" {% if selected_window_hours == 72 %}selected{% endif %}>72</option>
-      <option value="168" {% if selected_window_hours == 168 %}selected{% endif %}>168</option>
-    </select>
-    <label for="scope">Scope</label>
-    <select id="scope" name="scope">
-      <option value="all" {% if selected_scope == "all" %}selected{% endif %}>All</option>
-      <option value="handoffs" {% if selected_scope == "handoffs" %}selected{% endif %}>Handoffs</option>
-      <option value="events" {% if selected_scope == "events" %}selected{% endif %}>Events</option>
-    </select>
-    <button type="submit" class="button-compact">Apply</button>
-  </form>
-  <p class="muted" style="margin-top: 0;">Dashboard-first queue for AI handoffs and runtime events. Showing up to 200 latest records.</p>
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Handoffs</div>
+      <div class="stat-value">{{ handoff_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Conversation Events</div>
+      <div class="stat-value">{{ event_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Delivered</div>
+      <div class="stat-value">{{ delivered_handoff_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Failed Delivery</div>
+      <div class="stat-value">{{ failed_handoff_count }}</div>
+    </div>
+  </div>
+</div>
 
+<div class="panel">
+  <form method="get" action="/admin-ui/ai-operations" class="grid-2" style="align-items: end;">
+    <div>
+      <label for="window_hours">Period (hours)</label>
+      <select id="window_hours" name="window_hours">
+        <option value="1" {% if selected_window_hours == 1 %}selected{% endif %}>1</option>
+        <option value="6" {% if selected_window_hours == 6 %}selected{% endif %}>6</option>
+        <option value="24" {% if selected_window_hours == 24 %}selected{% endif %}>24</option>
+        <option value="72" {% if selected_window_hours == 72 %}selected{% endif %}>72</option>
+        <option value="168" {% if selected_window_hours == 168 %}selected{% endif %}>168</option>
+      </select>
+    </div>
+    <div>
+      <label for="scope">Scope</label>
+      <select id="scope" name="scope">
+        <option value="all" {% if selected_scope == "all" %}selected{% endif %}>All</option>
+        <option value="handoffs" {% if selected_scope == "handoffs" %}selected{% endif %}>Handoffs</option>
+        <option value="events" {% if selected_scope == "events" %}selected{% endif %}>Events</option>
+      </select>
+    </div>
+    <div>
+      <label for="tenant">Tenant</label>
+      <input id="tenant" type="text" name="tenant" value="{{ selected_tenant }}" placeholder="company_code">
+    </div>
+    <div>
+      <label for="channel">Channel</label>
+      <select id="channel" name="channel">
+        <option value="" {% if not selected_channel %}selected{% endif %}>All</option>
+        <option value="telegram" {% if selected_channel == "telegram" %}selected{% endif %}>Telegram</option>
+        <option value="whatsapp" {% if selected_channel == "whatsapp" %}selected{% endif %}>WhatsApp</option>
+        <option value="webchat" {% if selected_channel == "webchat" %}selected{% endif %}>Webchat</option>
+      </select>
+    </div>
+    <div>
+      <label for="session">Session</label>
+      <input id="session" type="text" name="session" value="{{ selected_session }}" placeholder="telegram:423663629">
+    </div>
+    <div>
+      <label for="q">Search</label>
+      <input id="q" type="text" name="q" value="{{ selected_query }}" placeholder="reason, event, order, delivery">
+    </div>
+    <div class="inline" style="grid-column: 1 / -1; justify-content: flex-end;">
+      <a class="button-pill" href="/admin-ui/ai-operations">Reset</a>
+      <button type="submit" class="button-compact">Apply</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <div class="inline" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
+    <h2 style="margin-bottom: 0;">Audit Feed</h2>
+    <div class="muted">Showing up to 200 latest matching records.</div>
+  </div>
   {% if rows %}
   <div class="table-scroll">
     <table class="table-plain-header">
@@ -57,9 +95,8 @@
           <th>Channel</th>
           <th>Session</th>
           <th>Reason / Event</th>
-          <th>Order</th>
-          <th>Target</th>
           <th>Delivery</th>
+          <th>Conversation</th>
           <th>Preview</th>
         </tr>
       </thead>
@@ -80,15 +117,28 @@
             <div class="muted" style="font-family: monospace;">{{ row.channel_user_id }}</div>
           </td>
           <td style="font-family: monospace;">{{ row.session_id }}</td>
-          <td>{{ row.reason }}</td>
-          <td style="font-family: monospace;">{{ row.active_order_name }}</td>
           <td>
-            <div>{{ row.target_type }}</div>
-            <div class="muted">{{ row.target_destination }}</div>
+            <div>{{ row.reason }}</div>
+            <div class="muted">{{ row.active_order_name }}</div>
           </td>
           <td>
-            <div>{{ row.delivery_status }}</div>
-            <div class="muted">{{ row.delivery_error }}</div>
+            {% if row.delivery_status == "failed" %}
+            <span class="badge badge-danger">{{ row.delivery_status }}</span>
+            {% elif row.delivery_status == "delivered" %}
+            <span class="badge badge-success">{{ row.delivery_status }}</span>
+            {% else %}
+            <span class="badge badge-neutral">{{ row.delivery_status }}</span>
+            {% endif %}
+            {% if row.delivery_error != "-" %}
+            <div class="muted" style="margin-top: 4px;">{{ row.delivery_error }}</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.conversation_id %}
+            <a class="button-pill" href="/admin-ui/ai-conversations/{{ row.conversation_id }}">Open</a>
+            {% else %}
+            <span class="muted">Not stored</span>
+          {% endif %}
           </td>
           <td class="muted">{{ row.reply_preview }}</td>
         </tr>
@@ -97,7 +147,7 @@
     </table>
   </div>
   {% else %}
-  <p class="muted">No AI runtime records for selected filter.</p>
+  <p class="muted">No AI runtime records for the selected filters.</p>
   {% endif %}
 </div>
 {% endblock %}
