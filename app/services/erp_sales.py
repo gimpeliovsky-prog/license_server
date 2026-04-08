@@ -160,6 +160,29 @@ def sanitize_existing_sales_order_item(item: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in cleaned.items() if value not in (None, "")}
 
 
+def _normalize_item_action(item: dict[str, Any]) -> str:
+    action = str((item or {}).get("action") or "add").strip().casefold()
+    return {
+        "delete": "remove",
+        "set_quantity": "update",
+        "change_quantity": "update",
+    }.get(action, action or "add")
+
+
+def _find_existing_item_indexes(existing_items: list[dict[str, Any]], item: dict[str, Any]) -> list[int]:
+    row_name = str(item.get("row_name") or item.get("sales_order_item_name") or "").strip()
+    if row_name:
+        return [index for index, row in enumerate(existing_items) if str(row.get("name") or "").strip() == row_name]
+    item_code = str(item.get("item_code") or "").strip().casefold()
+    if not item_code:
+        return []
+    return [
+        index
+        for index, row in enumerate(existing_items)
+        if str(row.get("item_code") or "").strip().casefold() == item_code
+    ]
+
+
 def fetch_sales_order_doc(tenant, sales_order_name: str) -> dict[str, Any]:
     response = request_tenant_erpnext(
         tenant,
@@ -228,6 +251,68 @@ def update_sales_order_items(tenant, *, sales_order_name: str, items: list[dict[
                 merged_items.append(sanitize_existing_sales_order_item(item))
 
         for item in items:
+            if not isinstance(item, dict):
+                continue
+            action = _normalize_item_action(item)
+            matching_indexes = _find_existing_item_indexes(merged_items, item)
+
+            if len(matching_indexes) > 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "Sales order contains multiple matching rows for this item.",
+                        "error_code": "sales_order_item_ambiguous",
+                        "sales_order_name": sales_order_name,
+                        "item_code": item.get("item_code"),
+                    },
+                )
+
+            if action == "remove":
+                if not matching_indexes:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "Sales order does not contain the requested item to remove.",
+                            "error_code": "sales_order_item_not_found",
+                            "sales_order_name": sales_order_name,
+                            "item_code": item.get("item_code"),
+                            "row_name": item.get("row_name"),
+                        },
+                    )
+                del merged_items[matching_indexes[0]]
+                continue
+
+            if action == "update":
+                if not matching_indexes:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "Sales order does not contain the requested item to update.",
+                            "error_code": "sales_order_item_not_found",
+                            "sales_order_name": sales_order_name,
+                            "item_code": item.get("item_code"),
+                            "row_name": item.get("row_name"),
+                        },
+                    )
+                target_item = merged_items[matching_indexes[0]]
+                qty = item.get("qty")
+                if qty in (None, ""):
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "Quantity is required when updating an existing sales order row.",
+                            "error_code": "sales_order_update_qty_required",
+                            "sales_order_name": sales_order_name,
+                            "item_code": item.get("item_code"),
+                        },
+                    )
+                target_item["qty"] = qty
+                for optional_field in ("rate", "uom", "conversion_factor"):
+                    value = item.get(optional_field)
+                    if value not in (None, ""):
+                        target_item[optional_field] = value
+                continue
+
             item_doc = resolve_item_doc(tenant, item.get("item_code"))
             normalized_source = dict(item)
             if item_doc and item_doc.get("item_code"):
@@ -238,6 +323,19 @@ def update_sales_order_items(tenant, *, sales_order_name: str, items: list[dict[
                 normalized_new["docstatus"] = 0
                 normalized_new["idx"] = len(merged_items) + 1
                 merged_items.append(normalized_new)
+
+        for index, merged_item in enumerate(merged_items, start=1):
+            merged_item["idx"] = index
+
+        if not merged_items:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Sales order must contain at least one item.",
+                    "error_code": "sales_order_empty",
+                    "sales_order_name": sales_order_name,
+                },
+            )
 
         save_doc: dict[str, Any] = {
             "doctype": "Sales Order",
