@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import HTTPException
 
+from app.services.erp_catalog import fetch_item_doc
 from app.services.erp_sales import fetch_sales_order_doc
 from app.services.erpnext import request_tenant_erpnext
 
@@ -102,3 +104,80 @@ def build_sales_order_status(order: dict[str, Any], *, order_name: str | None = 
 def get_sales_order_status(tenant, sales_order_name: str) -> dict[str, Any]:
     order_doc = fetch_sales_order_doc(tenant, sales_order_name)
     return build_sales_order_status(order_doc, order_name=sales_order_name)
+
+
+def get_item_availability(
+    tenant,
+    *,
+    item_code: str,
+    warehouse: str | None = None,
+    limit_page_length: int = 500,
+) -> dict[str, Any]:
+    item_ref = str(item_code or "").strip()
+    if not item_ref:
+        raise HTTPException(status_code=400, detail="Item code is required")
+
+    item_doc = fetch_item_doc(tenant, item_ref)
+    if not item_doc:
+        raise HTTPException(status_code=404, detail=f"Item '{item_ref}' not found")
+
+    filters: list[list[object]] = [["item_code", "=", item_ref]]
+    if warehouse:
+        filters.append(["warehouse", "=", warehouse.strip()])
+
+    rows = get_bin_records(
+        tenant,
+        filters=json.dumps(filters, ensure_ascii=False, separators=(",", ":")),
+        fields=json.dumps(
+            [
+                "warehouse",
+                "actual_qty",
+                "reserved_qty",
+                "reserved_qty_for_production",
+                "reserved_qty_for_sub_contract",
+            ],
+            separators=(",", ":"),
+        ),
+        limit_page_length=max(1, min(2000, int(limit_page_length or 500))),
+    )
+
+    warehouse_rows: list[dict[str, Any]] = []
+    total_actual = 0.0
+    total_reserved = 0.0
+    total_available = 0.0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        actual = float(row.get("actual_qty") or 0)
+        reserved = float(row.get("reserved_qty") or 0)
+        reserved_production = float(row.get("reserved_qty_for_production") or 0)
+        reserved_sub_contract = float(row.get("reserved_qty_for_sub_contract") or 0)
+        total_reserved_row = reserved + reserved_production + reserved_sub_contract
+        available = actual - total_reserved_row
+        warehouse_rows.append(
+            {
+                "warehouse": row.get("warehouse"),
+                "actual_qty": actual,
+                "reserved_qty": reserved,
+                "reserved_qty_for_production": reserved_production,
+                "reserved_qty_for_sub_contract": reserved_sub_contract,
+                "available_qty": available,
+            }
+        )
+        total_actual += actual
+        total_reserved += total_reserved_row
+        total_available += available
+
+    return {
+        "item_code": item_doc.get("item_code") or item_ref,
+        "item_name": item_doc.get("item_name"),
+        "stock_uom": item_doc.get("stock_uom"),
+        "requested_warehouse": warehouse.strip() if warehouse else None,
+        "in_stock": total_available > 0,
+        "total_actual_qty": total_actual,
+        "total_reserved_qty": total_reserved,
+        "total_available_qty": total_available,
+        "warehouse_count": len(warehouse_rows),
+        "warehouses": warehouse_rows,
+    }

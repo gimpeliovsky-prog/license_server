@@ -31,6 +31,7 @@ from app.services.erp_sales import (
     update_sales_order_items as update_sales_order_items_for_tenant,
 )
 from app.services.erp_stock import (
+    get_item_availability as get_item_availability_for_tenant,
     get_sales_order_status as get_sales_order_status_for_tenant,
     get_stock_settings as get_stock_settings_for_tenant,
     list_warehouses as list_warehouses_for_tenant,
@@ -956,6 +957,17 @@ def get_item(company_code: str, item_code: str, lang: str | None = None, db: Ses
     if not item:
         raise HTTPException(status_code=404, detail=f"Item '{item_code}' not found")
     return item
+
+
+@router.get("/tenants/{company_code}/items/{item_code}/availability")
+def get_item_availability(
+    company_code: str,
+    item_code: str,
+    warehouse: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    tenant = _get_tenant(db, company_code)
+    return get_item_availability_for_tenant(tenant, item_code=item_code, warehouse=warehouse)
 
 
 @router.get("/tenants/{company_code}/files/{file_path:path}")

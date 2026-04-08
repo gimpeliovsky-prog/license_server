@@ -24,6 +24,7 @@ from app.services.allowlist import Allowlist, get_allowlist, normalize_doctype, 
 from app.services.erpnext import ERPNextError, default_fields, request_tenant_erpnext
 from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erp_stock import (
+    get_item_availability as get_item_availability_for_tenant,
     get_bin_records,
     get_sales_order_status as get_sales_order_status_for_tenant,
     get_stock_settings as get_stock_settings_for_tenant,
@@ -342,6 +343,28 @@ def get_item(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return Response(content=response.content, status_code=response.status_code, media_type=response.headers.get("content-type"))
+
+
+@router.get("/items/{item_code}/availability")
+def get_item_availability(
+    item_code: str,
+    warehouse: str | None = Query(default=None),
+    allowlist: Allowlist = Depends(get_allowlist_dep),
+    context=Depends(get_erp_request_context),
+):
+    require_permissions(context, PERMISSION_ITEMS_READ, PERMISSION_STOCK_READ)
+    ensure_method_allowed("GET", allowlist)
+    get_allowed_doctype("Item", allowlist)
+    get_allowed_doctype("Bin", allowlist)
+    try:
+        data = get_item_availability_for_tenant(
+            context.tenant,
+            item_code=item_code,
+            warehouse=warehouse,
+        )
+    except ERPNextError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JSONResponse(content={"data": data}, status_code=200)
 
 
 @router.get("/files/{file_path:path}")
