@@ -12,6 +12,7 @@ from app.models.erp_idempotency import ERPIdempotencyEntry
 from app.models.erp_customer_snapshot import ERPCustomerSnapshot
 from app.models.erp_user import ERPUser
 from app.models.firmware import Firmware, DeviceOTALog
+from app.models.identity_review_case import IdentityReviewCase
 from app.models.license_key import LicenseKey, LicenseKeyStatus
 from app.models.ota_access import OTAAccess
 from app.models.pick_list_delivery_note import PickListDeliveryNoteLink
@@ -37,6 +38,7 @@ __all__ = [
     "ERPCustomerSnapshot",
     "ERPUser",
     "Firmware",
+    "IdentityReviewCase",
     "LicenseKey",
     "LicenseKeyStatus",
     "OTAAccess",

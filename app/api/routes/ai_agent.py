@@ -12,10 +12,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_ai_agent
-from app.models import AIConversation, AIConversationMessage, AuditLog, BuyerChannelIdentity
+from app.models import AIConversation, AIConversationMessage, AuditLog, BuyerChannelIdentity, IdentityReviewCase
 from app.models import LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.models.tenant_channel import TenantChannel
 from app.services.ai_handoff import dispatch_handoff
+from app.services.company_registry_il import resolve_company_query
 from app.services.crm_identity_sync import reconcile_buyer_identities, sync_tenant_crm_identity
 from app.services.erp_catalog import get_item_detail, list_items
 from app.services.erp_customers import (
@@ -77,6 +78,10 @@ class BuyerLookupResponse(BaseModel):
     phone: str | None = None
     channel: str | None = None
     recognized_via: str | None = None
+    recognition_status: str | None = None
+    match_confidence: str | None = None
+    needs_review: bool = False
+    review_reason: str | None = None
     is_returning_customer: bool = False
     recent_sales_orders: list[dict[str, Any]] = Field(default_factory=list)
     recent_sales_invoices: list[dict[str, Any]] = Field(default_factory=list)
@@ -97,6 +102,40 @@ class ResolveBuyerRequest(BaseModel):
     channel_user_id: str
     phone: str | None = None
     full_name: str | None = None
+
+
+class CompanyCandidateResponse(BaseModel):
+    company_number: str
+    company_name: str
+    company_status: str | None = None
+    company_type: str | None = None
+    city: str | None = None
+    is_active: bool = False
+
+
+class IdentifyBuyerCompanyRequest(BaseModel):
+    channel_type: str
+    channel_user_id: str
+    full_name: str
+    phone: str | None = None
+    company_query: str
+
+
+class IdentifyBuyerCompanyResponse(BaseModel):
+    found: bool = False
+    match_status: str = "none"
+    candidate: CompanyCandidateResponse | None = None
+    candidates: list[CompanyCandidateResponse] = Field(default_factory=list)
+    erp_customer_id: str | None = None
+    erp_customer_name: str | None = None
+    buyer_identity_id: str | None = None
+    review_case_id: str | None = None
+    recognition_status: str | None = None
+    match_confidence: str | None = None
+    needs_review: bool = False
+    review_reason: str | None = None
+    recent_sales_orders: list[dict[str, Any]] = Field(default_factory=list)
+    recent_sales_invoices: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CreateLicenseRequest(BaseModel):
@@ -243,6 +282,10 @@ def _buyer_lookup_response(
         phone=_normalize_phone(phone or (identity.phone if identity else None)),
         channel=channel or (identity.channel if identity else None),
         recognized_via=recognized_via,
+        recognition_status=(identity.recognition_status if identity else None),
+        match_confidence=(identity.match_confidence if identity else None),
+        needs_review=bool(identity.needs_review) if identity else False,
+        review_reason=(identity.review_reason if identity else None),
         is_returning_customer=bool(sales_orders or sales_invoices),
         recent_sales_orders=sales_orders,
         recent_sales_invoices=sales_invoices,
@@ -260,6 +303,11 @@ def _upsert_buyer_identity(
     erp_customer_name: str | None = None,
     phone: str | None = None,
     full_name: str | None = None,
+    recognition_status: str | None = None,
+    match_confidence: str | None = None,
+    source: str | None = None,
+    needs_review: bool | None = None,
+    review_reason: str | None = None,
 ) -> BuyerChannelIdentity:
     identity = (
         db.query(BuyerChannelIdentity)
@@ -286,7 +334,83 @@ def _upsert_buyer_identity(
         identity.phone = normalized_phone
     if full_name:
         identity.full_name = full_name
+    if recognition_status:
+        identity.recognition_status = recognition_status
+    if match_confidence:
+        identity.match_confidence = match_confidence
+    if source:
+        identity.source = source
+    if needs_review is not None:
+        identity.needs_review = bool(needs_review)
+    if review_reason is not None:
+        identity.review_reason = review_reason
+    identity.last_verified_at = utcnow()
     return identity
+
+
+def _normalize_company_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().casefold().replace("~", "").replace('"', "").split())
+
+
+def _find_customer_by_official_name(tenant: Tenant, official_company_name: str) -> tuple[str | None, str | None]:
+    normalized_target = _normalize_company_name(official_company_name)
+    if not normalized_target:
+        return None, None
+    customers = list_customers_for_tenant(
+        tenant,
+        fields='["name","customer_name"]',
+        limit_start=0,
+        limit_page_length=500,
+    )
+    exact_matches: list[dict[str, Any]] = []
+    for row in customers:
+        if not isinstance(row, dict):
+            continue
+        if _normalize_company_name(row.get("customer_name")) == normalized_target:
+            exact_matches.append(row)
+    if len(exact_matches) == 1:
+        match = exact_matches[0]
+        return str(match.get("name") or "").strip() or None, str(match.get("customer_name") or "").strip() or None
+    return None, None
+
+
+def _create_identity_review_case(
+    *,
+    db: Session,
+    tenant: Tenant,
+    identity: BuyerChannelIdentity | None,
+    channel: str,
+    channel_user_id: str,
+    phone: str | None,
+    full_name: str | None,
+    company_query: str,
+    company_number: str | None,
+    official_company_name: str | None,
+    matched_erp_customer_id: str | None,
+    matched_erp_customer_name: str | None,
+    reason: str,
+    payload: dict[str, Any] | None = None,
+) -> IdentityReviewCase:
+    review_case = IdentityReviewCase(
+        tenant_id=tenant.id,
+        buyer_identity_id=identity.id if identity else None,
+        channel=channel,
+        channel_user_id=channel_user_id,
+        phone=_normalize_phone(phone),
+        full_name=full_name,
+        company_query=company_query,
+        company_registry_number=company_number,
+        official_company_name=official_company_name,
+        matched_erp_customer_id=matched_erp_customer_id,
+        matched_erp_customer_name=matched_erp_customer_name,
+        status="open",
+        reason=reason,
+        requires_operator=True,
+        payload_json=payload or {},
+    )
+    db.add(review_case)
+    db.flush()
+    return review_case
 
 
 def _channel_ai_policy(channel: TenantChannel | None, tenant: Tenant) -> dict[str, Any]:
@@ -652,6 +776,12 @@ def find_buyer_by_telegram(company_code: str, tg_chat_id: str, db: Session = Dep
             identity.erp_customer_name = match.get("erp_customer_name")
             if match.get("contact_name"):
                 identity.full_name = match.get("contact_name")
+            identity.recognition_status = "recognized"
+            identity.match_confidence = "high"
+            identity.source = "phone_lookup"
+            identity.needs_review = False
+            identity.review_reason = None
+            identity.last_verified_at = utcnow()
             db.commit()
             db.refresh(identity)
             customer_id = identity.erp_customer_id
@@ -719,6 +849,11 @@ def resolve_buyer(
         erp_customer_name=match.get("erp_customer_name"),
         phone=normalized_phone,
         full_name=payload.full_name or match.get("contact_name"),
+        recognition_status="recognized",
+        match_confidence="high",
+        source="phone_lookup",
+        needs_review=False,
+        review_reason=None,
     )
     db.commit()
     db.refresh(identity)
@@ -731,6 +866,131 @@ def resolve_buyer(
         identity=identity,
         phone=normalized_phone,
         recognized_via="phone_linked_to_channel",
+    )
+
+
+@router.post("/tenants/{company_code}/buyers/identify-company", response_model=IdentifyBuyerCompanyResponse)
+def identify_buyer_company(
+    company_code: str,
+    payload: IdentifyBuyerCompanyRequest,
+    db: Session = Depends(get_db),
+) -> IdentifyBuyerCompanyResponse:
+    tenant = _get_tenant(db, company_code)
+    channel = str(payload.channel_type or "").strip().lower()
+    channel_user_id = str(payload.channel_user_id or "").strip()
+    if not channel or not channel_user_id:
+        raise HTTPException(status_code=400, detail="channel_type and channel_user_id are required")
+
+    resolved = resolve_company_query(payload.company_query, limit=5)
+    match_status = str(resolved.get("match_status") or "none")
+    candidates = [CompanyCandidateResponse(**candidate) for candidate in resolved.get("candidates") or [] if isinstance(candidate, dict)]
+    candidate_dict = resolved.get("candidate") if isinstance(resolved.get("candidate"), dict) else None
+    candidate = CompanyCandidateResponse(**candidate_dict) if candidate_dict else None
+
+    if match_status != "exact" or not candidate:
+        return IdentifyBuyerCompanyResponse(
+            found=False,
+            match_status=match_status,
+            candidate=candidate,
+            candidates=candidates,
+        )
+
+    official_company_name = candidate.company_name
+    company_number = candidate.company_number
+    normalized_phone = _normalize_phone(payload.phone)
+    identity = (
+        db.query(BuyerChannelIdentity)
+        .filter(
+            BuyerChannelIdentity.tenant_id == tenant.id,
+            BuyerChannelIdentity.channel == channel,
+            BuyerChannelIdentity.channel_user_id == channel_user_id,
+        )
+        .first()
+    )
+    matched_customer_id, matched_customer_name = _find_customer_by_official_name(tenant, official_company_name)
+
+    if matched_customer_id:
+        sales_orders, sales_invoices = load_sales_history(tenant, matched_customer_id)
+        identity = _upsert_buyer_identity(
+            db=db,
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id,
+            erp_contact_id=identity.erp_contact_id if identity else None,
+            erp_customer_id=matched_customer_id,
+            erp_customer_name=matched_customer_name or official_company_name,
+            phone=normalized_phone,
+            full_name=payload.full_name,
+            recognition_status="recognized_needs_reverification",
+            match_confidence="medium",
+            source="company_registry",
+            needs_review=True,
+            review_reason="phone_unverified_company_match",
+        )
+        db.commit()
+        db.refresh(identity)
+        return IdentifyBuyerCompanyResponse(
+            found=True,
+            match_status="exact",
+            candidate=candidate,
+            candidates=[candidate],
+            erp_customer_id=matched_customer_id,
+            erp_customer_name=matched_customer_name or official_company_name,
+            buyer_identity_id=str(identity.id),
+            recognition_status=identity.recognition_status,
+            match_confidence=identity.match_confidence,
+            needs_review=bool(identity.needs_review),
+            review_reason=identity.review_reason,
+            recent_sales_orders=sales_orders,
+            recent_sales_invoices=sales_invoices,
+        )
+
+    identity = _upsert_buyer_identity(
+        db=db,
+        tenant=tenant,
+        channel=channel,
+        channel_user_id=channel_user_id,
+        erp_contact_id=identity.erp_contact_id if identity else None,
+        erp_customer_id=None,
+        erp_customer_name=official_company_name,
+        phone=normalized_phone,
+        full_name=payload.full_name,
+        recognition_status="operator_review_required",
+        match_confidence="high",
+        source="company_registry",
+        needs_review=True,
+        review_reason="official_company_unmapped_to_erp",
+    )
+    review_case = _create_identity_review_case(
+        db=db,
+        tenant=tenant,
+        identity=identity,
+        channel=channel,
+        channel_user_id=channel_user_id,
+        phone=normalized_phone,
+        full_name=payload.full_name,
+        company_query=payload.company_query,
+        company_number=company_number,
+        official_company_name=official_company_name,
+        matched_erp_customer_id=None,
+        matched_erp_customer_name=None,
+        reason="official_company_unmapped_to_erp",
+        payload={"candidate": candidate.model_dump()},
+    )
+    db.commit()
+    db.refresh(identity)
+    db.refresh(review_case)
+    return IdentifyBuyerCompanyResponse(
+        found=False,
+        match_status="exact",
+        candidate=candidate,
+        candidates=[candidate],
+        buyer_identity_id=str(identity.id),
+        review_case_id=str(review_case.id),
+        recognition_status=identity.recognition_status,
+        match_confidence=identity.match_confidence,
+        needs_review=True,
+        review_reason=identity.review_reason,
     )
 
 
@@ -970,6 +1230,11 @@ def create_buyer(company_code: str, payload: CreateBuyerRequest, db: Session = D
             erp_customer_name=match.get("erp_customer_name"),
             phone=normalized_phone,
             full_name=payload.full_name or match.get("contact_name"),
+            recognition_status="recognized",
+            match_confidence="high",
+            source="phone_lookup",
+            needs_review=False,
+            review_reason=None,
         )
         db.commit()
         db.refresh(identity)
