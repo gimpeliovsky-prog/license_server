@@ -111,13 +111,6 @@ def normalize_license_description(value: str | None) -> str | None:
     return normalized or None
 
 
-def normalize_phone(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
 def normalize_json_array(value: str | None) -> str | None:
     if value is None:
         return None
@@ -3131,3 +3124,4 @@ async def delete_allowlist_entry(request: Request, entry_id: str, db: Session = 
     db.commit()
     set_flash(request, message="Allowlist entry deleted")
     return redirect_to("/admin-ui/erp-allowlist")
+from app.services.phone_numbers import normalize_phone

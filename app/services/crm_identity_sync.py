@@ -9,6 +9,7 @@ from urllib.parse import quote
 from sqlalchemy.orm import Session
 
 from app.models import BuyerChannelIdentity, ERPContactCustomerLink, ERPContactSnapshot, ERPCRMSyncState, ERPCustomerSnapshot, Tenant, TenantStatus
+from app.services.phone_numbers import normalize_phone
 from app.services.erpnext import ERPNextError, request_tenant_erpnext
 from app.utils.time import utcnow
 
@@ -16,18 +17,6 @@ logger = logging.getLogger(__name__)
 
 CUSTOMER_STREAM = "customers"
 CONTACT_STREAM = "contacts"
-
-
-def normalize_phone(value: str | None) -> str | None:
-    digits = "".join(ch for ch in str(value or "").strip() if ch.isdigit() or ch == "+")
-    if not digits:
-        return None
-    if digits.startswith("+"):
-        normalized = "+" + "".join(ch for ch in digits[1:] if ch.isdigit())
-    else:
-        normalized = "+" + "".join(ch for ch in digits if ch.isdigit())
-    return normalized if len("".join(ch for ch in normalized if ch.isdigit())) >= 8 else None
-
 
 def parse_erp_datetime(value: Any) -> datetime | None:
     raw = str(value or "").strip()

@@ -30,6 +30,7 @@ from app.services.erpnext import (
     ERPNextError,
     request_tenant_erpnext,
 )
+from app.services.phone_numbers import normalize_phone as _normalize_phone
 from app.services.erp_sales import (
     build_sales_order_summary,
     create_invoice_from_sales_order,
@@ -246,18 +247,6 @@ def _safe_json_list(value: Any) -> list[str]:
         if isinstance(parsed, list):
             return [str(item).strip() for item in parsed if str(item).strip()]
     return []
-
-
-def _normalize_phone(value: str | None) -> str | None:
-    digits = "".join(ch for ch in str(value or "").strip() if ch.isdigit() or ch == "+")
-    if not digits:
-        return None
-    if digits.startswith("+"):
-        normalized = "+" + "".join(ch for ch in digits[1:] if ch.isdigit())
-    else:
-        normalized = "+" + "".join(ch for ch in digits if ch.isdigit())
-    return normalized if len("".join(ch for ch in normalized if ch.isdigit())) >= 8 else None
-
 
 def _buyer_lookup_response(
     *,

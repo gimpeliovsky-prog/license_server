@@ -6,8 +6,9 @@ from urllib.parse import quote
 
 from sqlalchemy.orm import Session
 
-from app.services.crm_identity_sync import normalize_phone, resolve_buyer_from_snapshots
+from app.services.crm_identity_sync import resolve_buyer_from_snapshots
 from app.services.erpnext import request_tenant_erpnext
+from app.services.phone_numbers import normalize_phone, phone_match_variants
 
 
 def list_customers(
@@ -120,33 +121,27 @@ def load_sales_history(tenant, erp_customer_id: str | None) -> tuple[list[dict[s
 def resolve_buyer_by_phone_live(tenant, normalized_phone: str | None) -> dict[str, str | None] | None:
     if not normalized_phone:
         return None
-    contact_resp = request_tenant_erpnext(
-        tenant,
-        "GET",
-        "/api/resource/Contact",
-        params={
-            "filters": json.dumps([["mobile_no", "=", normalized_phone]]),
-            "fields": json.dumps(["name", "full_name", "mobile_no", "phone"]),
-            "limit_page_length": 5,
-        },
-    )
-    if contact_resp.status_code != 200:
-        return None
-    contacts = contact_resp.json().get("data", [])
-    if not contacts:
-        phone_resp = request_tenant_erpnext(
-            tenant,
-            "GET",
-            "/api/resource/Contact",
-            params={
-                "filters": json.dumps([["phone", "=", normalized_phone]]),
-                "fields": json.dumps(["name", "full_name", "mobile_no", "phone"]),
-                "limit_page_length": 5,
-            },
-        )
-        if phone_resp.status_code != 200:
-            return None
-        contacts = phone_resp.json().get("data", [])
+    contacts: list[dict[str, Any]] = []
+    for field_name in ("mobile_no", "phone"):
+        if contacts:
+            break
+        for variant in phone_match_variants(normalized_phone):
+            contact_resp = request_tenant_erpnext(
+                tenant,
+                "GET",
+                "/api/resource/Contact",
+                params={
+                    "filters": json.dumps([[field_name, "=", variant]]),
+                    "fields": json.dumps(["name", "full_name", "mobile_no", "phone"]),
+                    "limit_page_length": 5,
+                },
+            )
+            if contact_resp.status_code != 200:
+                continue
+            payload = contact_resp.json().get("data", [])
+            if isinstance(payload, list) and payload:
+                contacts = payload
+                break
     if not contacts:
         return None
     contact_name = contacts[0]["name"]
