@@ -14,6 +14,84 @@ _CATALOG_SCAN_PAGE_SIZE = 200
 _CATALOG_SCAN_MAX_ROWS = 2000
 
 
+def _fetch_translation_source_texts(tenant, *, query: str, lang: str, limit: int) -> list[str]:
+    normalized_query = _normalize_catalog_text(query)
+    if not normalized_query or not lang or lang == "en":
+        return []
+
+    source_texts: list[str] = []
+    seen: set[str] = set()
+    search_variants = [
+        [["language", "=", lang], ["translated_text", "=", query]],
+        [["language", "=", lang], ["translated_text", "like", f"%{query}%"]],
+    ]
+    for filters in search_variants:
+        response = request_tenant_erpnext(
+            tenant,
+            "GET",
+            "/api/resource/Translation",
+            params={
+                "fields": json.dumps(["source_text", "translated_text", "language"]),
+                "filters": json.dumps(filters),
+                "limit_page_length": max(5, min(100, limit * 4)),
+            },
+        )
+        if response.status_code != 200:
+            continue
+        payload = response.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source_text = str(row.get("source_text") or "").strip()
+            translated_text = str(row.get("translated_text") or "").strip()
+            if not source_text or source_text in seen:
+                continue
+            if normalized_query not in _normalize_catalog_text(translated_text):
+                continue
+            seen.add(source_text)
+            source_texts.append(source_text)
+            if len(source_texts) >= limit:
+                return source_texts
+    return source_texts
+
+
+def _fetch_items_by_source_texts(tenant, *, source_texts: list[str], limit: int) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for source_text in source_texts:
+        response = request_tenant_erpnext(
+            tenant,
+            "GET",
+            "/api/resource/Item",
+            params={
+                "fields": json.dumps(["item_code", "item_name", "item_group", "description", "stock_uom", "image", "website_image"]),
+                "filters": json.dumps([["disabled", "=", 0], ["item_name", "=", source_text]]),
+                "limit_page_length": 5,
+            },
+        )
+        if response.status_code != 200:
+            continue
+        payload = response.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item_code = str(row.get("item_code") or "").strip()
+            if item_code and item_code in seen_codes:
+                continue
+            if item_code:
+                seen_codes.add(item_code)
+            matched.append(row)
+            if len(matched) >= limit:
+                return matched
+    return matched
+
+
 def _normalize_catalog_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
@@ -373,6 +451,10 @@ def list_items(
     items = _fetch(filters)
     if not items and item_name:
         items = _fetch([["disabled", "=", 0], ["item_name", "like", f"%{item_name}%"]])
+    if not items and item_name and lang and lang != "en":
+        source_texts = _fetch_translation_source_texts(tenant, query=item_name, lang=lang, limit=resolved_limit)
+        if source_texts:
+            items = _fetch_items_by_source_texts(tenant, source_texts=source_texts, limit=resolved_limit)
     if not items and item_group and not item_name:
         items = _fetch([["disabled", "=", 0], ["item_name", "like", f"%{item_group}%"]])
     if not items and item_name:
