@@ -10,6 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.api.routes import ai_agent, admin_router, auth_router, erpnext_router, ota_router, status_router
 from app.config import get_settings
 from app.db import SessionLocal, engine
+from app.services.crm_identity_sync_runner import start_crm_identity_sync_runner, stop_crm_identity_sync_runner
 from app.services.process_job_runner import start_process_job_runner, stop_process_job_runner
 from app.services.process_jobs import build_process_job_summary
 from app.services.server_version import get_server_version
@@ -81,10 +82,12 @@ app.include_router(web_router)
 @app.on_event("startup")
 async def startup_process_job_runner() -> None:
     await start_process_job_runner()
+    await start_crm_identity_sync_runner()
 
 
 @app.on_event("shutdown")
 async def shutdown_process_job_runner() -> None:
+    await stop_crm_identity_sync_runner()
     await stop_process_job_runner()
 
 

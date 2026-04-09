@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     process_job_cleanup_delete_limit: int = Field(default=1000, alias="PROCESS_JOB_CLEANUP_DELETE_LIMIT")
     process_job_failed_alert_threshold: int = Field(default=1, alias="PROCESS_JOB_FAILED_ALERT_THRESHOLD")
     process_job_stale_alert_threshold: int = Field(default=1, alias="PROCESS_JOB_STALE_ALERT_THRESHOLD")
+    crm_identity_sync_enabled: bool = Field(default=True, alias="CRM_IDENTITY_SYNC_ENABLED")
+    crm_identity_sync_timezone: str = Field(default="Asia/Jerusalem", alias="CRM_IDENTITY_SYNC_TIMEZONE")
+    crm_identity_sync_hour: int = Field(default=0, alias="CRM_IDENTITY_SYNC_HOUR")
+    crm_identity_sync_minute: int = Field(default=0, alias="CRM_IDENTITY_SYNC_MINUTE")
+    crm_identity_sync_page_size: int = Field(default=200, alias="CRM_IDENTITY_SYNC_PAGE_SIZE")
     erp_allowed_doctypes: list[str] = Field(
         default_factory=lambda: [
             "Pick List",
@@ -147,6 +152,24 @@ class Settings(BaseSettings):
     def parse_admin_session_same_site(cls, value: object) -> str:
         text = str(value or "").strip().lower()
         return text if text in {"lax", "strict", "none"} else "lax"
+
+    @field_validator("crm_identity_sync_hour", mode="before")
+    @classmethod
+    def parse_crm_sync_hour(cls, value: object) -> int:
+        try:
+            hour = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return hour if 0 <= hour <= 23 else 0
+
+    @field_validator("crm_identity_sync_minute", mode="before")
+    @classmethod
+    def parse_crm_sync_minute(cls, value: object) -> int:
+        try:
+            minute = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return minute if 0 <= minute <= 59 else 0
 
     @property
     def trusted_proxy_net_list(self) -> list[str]:

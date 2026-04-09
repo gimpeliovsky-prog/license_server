@@ -4,6 +4,9 @@ import json
 from typing import Any
 from urllib.parse import quote
 
+from sqlalchemy.orm import Session
+
+from app.services.crm_identity_sync import normalize_phone, resolve_buyer_from_snapshots
 from app.services.erpnext import request_tenant_erpnext
 
 
@@ -114,24 +117,38 @@ def load_sales_history(tenant, erp_customer_id: str | None) -> tuple[list[dict[s
     return sales_orders, sales_invoices
 
 
-def resolve_customer_by_phone(tenant, normalized_phone: str | None) -> tuple[str | None, str | None]:
+def resolve_buyer_by_phone_live(tenant, normalized_phone: str | None) -> dict[str, str | None] | None:
     if not normalized_phone:
-        return None, None
+        return None
     contact_resp = request_tenant_erpnext(
         tenant,
         "GET",
         "/api/resource/Contact",
         params={
             "filters": json.dumps([["mobile_no", "=", normalized_phone]]),
-            "fields": json.dumps(["name", "full_name", "mobile_no"]),
+            "fields": json.dumps(["name", "full_name", "mobile_no", "phone"]),
             "limit_page_length": 5,
         },
     )
     if contact_resp.status_code != 200:
-        return None, None
+        return None
     contacts = contact_resp.json().get("data", [])
     if not contacts:
-        return None, None
+        phone_resp = request_tenant_erpnext(
+            tenant,
+            "GET",
+            "/api/resource/Contact",
+            params={
+                "filters": json.dumps([["phone", "=", normalized_phone]]),
+                "fields": json.dumps(["name", "full_name", "mobile_no", "phone"]),
+                "limit_page_length": 5,
+            },
+        )
+        if phone_resp.status_code != 200:
+            return None
+        contacts = phone_resp.json().get("data", [])
+    if not contacts:
+        return None
     contact_name = contacts[0]["name"]
     link_resp = request_tenant_erpnext(
         tenant,
@@ -150,9 +167,34 @@ def resolve_customer_by_phone(tenant, normalized_phone: str | None) -> tuple[str
         },
     )
     if link_resp.status_code != 200 or not link_resp.json().get("data"):
-        return None, None
+        return {
+            "erp_contact_id": contact_name,
+            "contact_name": contacts[0].get("full_name"),
+            "erp_customer_id": None,
+            "erp_customer_name": None,
+        }
     customer_name = link_resp.json()["data"][0]["link_name"]
-    return customer_name, contacts[0].get("full_name")
+    customer = get_customer_detail(tenant, customer_name, fields=json.dumps(["name", "customer_name"]))
+    return {
+        "erp_contact_id": contact_name,
+        "contact_name": contacts[0].get("full_name"),
+        "erp_customer_id": customer_name,
+        "erp_customer_name": (customer or {}).get("customer_name"),
+    }
+
+
+def resolve_buyer_by_phone(db: Session, tenant, normalized_phone: str | None) -> dict[str, str | None] | None:
+    snapshot_match = resolve_buyer_from_snapshots(db, tenant, normalized_phone)
+    if snapshot_match:
+        return snapshot_match
+    return resolve_buyer_by_phone_live(tenant, normalized_phone)
+
+
+def resolve_customer_by_phone(tenant, normalized_phone: str | None) -> tuple[str | None, str | None]:
+    match = resolve_buyer_by_phone_live(tenant, normalized_phone)
+    if not match:
+        return None, None
+    return match.get("erp_customer_id"), match.get("contact_name")
 
 
 def create_individual_customer(tenant, *, full_name: str, normalized_phone: str | None = None) -> tuple[str, str | None]:

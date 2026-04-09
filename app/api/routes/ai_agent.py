@@ -16,13 +16,13 @@ from app.models import AIConversation, AIConversationMessage, AuditLog, BuyerCha
 from app.models import LicenseKey, LicenseKeyStatus, Tenant, TenantStatus
 from app.models.tenant_channel import TenantChannel
 from app.services.ai_handoff import dispatch_handoff
+from app.services.crm_identity_sync import reconcile_buyer_identities, sync_tenant_crm_identity
 from app.services.erp_catalog import get_item_detail, list_items
 from app.services.erp_customers import (
-    create_individual_customer,
     get_customer_detail as get_customer_detail_for_tenant,
     list_customers as list_customers_for_tenant,
     load_sales_history,
-    resolve_customer_by_phone,
+    resolve_buyer_by_phone,
 )
 from app.services.erp_media import fetch_private_file, fetch_public_file
 from app.services.erpnext import (
@@ -69,6 +69,8 @@ class ChannelLookupResponse(BaseModel):
 
 class BuyerLookupResponse(BaseModel):
     found: bool
+    erp_contact_id: str | None = None
+    contact_name: str | None = None
     erp_customer_name: str | None = None
     erp_customer_id: str | None = None
     buyer_identity_id: str | None = None
@@ -221,7 +223,9 @@ def _normalize_phone(value: str | None) -> str | None:
 def _buyer_lookup_response(
     *,
     tenant: Tenant,
-    erp_customer_id: str,
+    erp_contact_id: str | None = None,
+    contact_name: str | None = None,
+    erp_customer_id: str | None = None,
     erp_customer_name: str | None,
     identity: BuyerChannelIdentity | None = None,
     phone: str | None = None,
@@ -231,6 +235,8 @@ def _buyer_lookup_response(
     sales_orders, sales_invoices = load_sales_history(tenant, erp_customer_id)
     return BuyerLookupResponse(
         found=True,
+        erp_contact_id=erp_contact_id or (identity.erp_contact_id if identity else None),
+        contact_name=contact_name or (identity.full_name if identity else None),
         erp_customer_name=erp_customer_name,
         erp_customer_id=erp_customer_id,
         buyer_identity_id=str(identity.id) if identity else None,
@@ -249,7 +255,9 @@ def _upsert_buyer_identity(
     tenant: Tenant,
     channel: str,
     channel_user_id: str,
-    erp_customer_id: str,
+    erp_contact_id: str | None = None,
+    erp_customer_id: str | None = None,
+    erp_customer_name: str | None = None,
     phone: str | None = None,
     full_name: str | None = None,
 ) -> BuyerChannelIdentity:
@@ -267,10 +275,12 @@ def _upsert_buyer_identity(
             tenant_id=tenant.id,
             channel=channel,
             channel_user_id=channel_user_id,
-            erp_customer_id=erp_customer_id,
         )
         db.add(identity)
+    identity.erp_contact_id = erp_contact_id
     identity.erp_customer_id = erp_customer_id
+    if erp_customer_name:
+        identity.erp_customer_name = erp_customer_name
     normalized_phone = _normalize_phone(phone)
     if normalized_phone:
         identity.phone = normalized_phone
@@ -592,23 +602,27 @@ def find_buyer_by_phone(company_code: str, phone: str, db: Session = Depends(get
     if identity and identity.erp_customer_id:
         return _buyer_lookup_response(
             tenant=tenant,
+            erp_contact_id=identity.erp_contact_id,
+            contact_name=identity.full_name,
             erp_customer_id=identity.erp_customer_id,
-            erp_customer_name=identity.full_name,
+            erp_customer_name=identity.erp_customer_name or identity.full_name,
             identity=identity,
             phone=normalized_phone,
             recognized_via="phone_identity",
         )
 
-    customer_id, customer_name = resolve_customer_by_phone(tenant, normalized_phone)
-    if not customer_id:
+    match = resolve_buyer_by_phone(db, tenant, normalized_phone)
+    if not match or not match.get("erp_customer_id"):
         return BuyerLookupResponse(found=False)
     return _buyer_lookup_response(
         tenant=tenant,
-        erp_customer_id=customer_id,
-        erp_customer_name=customer_name,
+        erp_contact_id=match.get("erp_contact_id"),
+        contact_name=match.get("contact_name"),
+        erp_customer_id=match.get("erp_customer_id"),
+        erp_customer_name=match.get("erp_customer_name"),
         identity=identity,
         phone=normalized_phone,
-        recognized_via="erp_phone",
+        recognized_via="snapshot_phone",
     )
 
 
@@ -627,17 +641,29 @@ def find_buyer_by_telegram(company_code: str, tg_chat_id: str, db: Session = Dep
     if not identity:
         return BuyerLookupResponse(found=False)
     customer_id = identity.erp_customer_id
-    customer_name = identity.full_name
-    if identity.phone and not customer_id:
-        customer_id, customer_name = resolve_customer_by_phone(tenant, _normalize_phone(identity.phone))
-        if customer_id:
-            identity.erp_customer_id = customer_id
+    customer_name = identity.erp_customer_name or identity.full_name
+    contact_id = identity.erp_contact_id
+    contact_name = identity.full_name
+    if identity.phone and (not customer_id or not contact_id):
+        match = resolve_buyer_by_phone(db, tenant, _normalize_phone(identity.phone))
+        if match:
+            identity.erp_contact_id = match.get("erp_contact_id")
+            identity.erp_customer_id = match.get("erp_customer_id")
+            identity.erp_customer_name = match.get("erp_customer_name")
+            if match.get("contact_name"):
+                identity.full_name = match.get("contact_name")
             db.commit()
             db.refresh(identity)
+            customer_id = identity.erp_customer_id
+            customer_name = identity.erp_customer_name
+            contact_id = identity.erp_contact_id
+            contact_name = identity.full_name
     if not customer_id:
         return BuyerLookupResponse(found=False)
     return _buyer_lookup_response(
         tenant=tenant,
+        erp_contact_id=contact_id,
+        contact_name=contact_name,
         erp_customer_id=customer_id,
         erp_customer_name=customer_name,
         identity=identity,
@@ -669,16 +695,18 @@ def resolve_buyer(
     if identity and identity.erp_customer_id:
         return _buyer_lookup_response(
             tenant=tenant,
+            erp_contact_id=identity.erp_contact_id,
+            contact_name=identity.full_name,
             erp_customer_id=identity.erp_customer_id,
-            erp_customer_name=identity.full_name,
+            erp_customer_name=identity.erp_customer_name or identity.full_name,
             identity=identity,
             recognized_via="channel_identity",
         )
 
     candidate_phone = payload.phone or (channel_user_id if channel == "whatsapp" else None)
     normalized_phone = _normalize_phone(candidate_phone)
-    customer_id, customer_name = resolve_customer_by_phone(tenant, normalized_phone)
-    if not customer_id:
+    match = resolve_buyer_by_phone(db, tenant, normalized_phone)
+    if not match or not match.get("erp_customer_id"):
         return BuyerLookupResponse(found=False)
 
     identity = _upsert_buyer_identity(
@@ -686,16 +714,20 @@ def resolve_buyer(
         tenant=tenant,
         channel=channel,
         channel_user_id=channel_user_id,
-        erp_customer_id=customer_id,
+        erp_contact_id=match.get("erp_contact_id"),
+        erp_customer_id=match.get("erp_customer_id"),
+        erp_customer_name=match.get("erp_customer_name"),
         phone=normalized_phone,
-        full_name=payload.full_name or customer_name,
+        full_name=payload.full_name or match.get("contact_name"),
     )
     db.commit()
     db.refresh(identity)
     return _buyer_lookup_response(
         tenant=tenant,
-        erp_customer_id=customer_id,
-        erp_customer_name=customer_name,
+        erp_contact_id=match.get("erp_contact_id"),
+        contact_name=match.get("contact_name"),
+        erp_customer_id=match.get("erp_customer_id"),
+        erp_customer_name=match.get("erp_customer_name"),
         identity=identity,
         phone=normalized_phone,
         recognized_via="phone_linked_to_channel",
@@ -919,25 +951,10 @@ def create_handoff(
 @router.post("/tenants/{company_code}/buyers", response_model=BuyerLookupResponse, status_code=201)
 def create_buyer(company_code: str, payload: CreateBuyerRequest, db: Session = Depends(get_db)) -> BuyerLookupResponse:
     tenant = _get_tenant(db, company_code)
-    customer_id = ""
-    customer_name = payload.full_name
     normalized_phone = _normalize_phone(payload.phone)
-
-    if normalized_phone:
-        existing = find_buyer_by_phone(company_code, normalized_phone, db)
-        if existing.found and existing.erp_customer_id:
-            customer_id = existing.erp_customer_id
-            customer_name = existing.erp_customer_name or payload.full_name
-
-    if not customer_id:
-        try:
-            customer_id, customer_name = create_individual_customer(
-                tenant,
-                full_name=payload.full_name,
-                normalized_phone=normalized_phone,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    match = resolve_buyer_by_phone(db, tenant, normalized_phone)
+    if not match or not match.get("erp_customer_id"):
+        raise HTTPException(status_code=409, detail="Buyer was not recognized in ERP snapshots; customer creation is disabled")
 
     channel_type = str(payload.channel_type or ("telegram" if payload.tg_chat_id else "")).strip().lower() or None
     channel_user_id = str(payload.channel_user_id or payload.tg_chat_id or "").strip() or None
@@ -948,22 +965,35 @@ def create_buyer(company_code: str, payload: CreateBuyerRequest, db: Session = D
             tenant=tenant,
             channel=channel_type,
             channel_user_id=channel_user_id,
-            erp_customer_id=customer_id,
+            erp_contact_id=match.get("erp_contact_id"),
+            erp_customer_id=match.get("erp_customer_id"),
+            erp_customer_name=match.get("erp_customer_name"),
             phone=normalized_phone,
-            full_name=payload.full_name,
+            full_name=payload.full_name or match.get("contact_name"),
         )
         db.commit()
         db.refresh(identity)
 
     return _buyer_lookup_response(
         tenant=tenant,
-        erp_customer_id=customer_id,
-        erp_customer_name=customer_name,
+        erp_contact_id=match.get("erp_contact_id"),
+        contact_name=match.get("contact_name"),
+        erp_customer_id=match.get("erp_customer_id"),
+        erp_customer_name=match.get("erp_customer_name"),
         identity=identity,
         phone=normalized_phone,
         channel=channel_type,
-        recognized_via="buyer_created" if not identity else "channel_linked",
+        recognized_via="snapshot_linked" if identity else "snapshot_phone",
     )
+
+
+@router.post("/tenants/{company_code}/buyers/sync-crm")
+def sync_buyer_crm(company_code: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    tenant = _get_tenant(db, company_code)
+    result = sync_tenant_crm_identity(db, tenant)
+    # A second reconcile pass is cheap and makes manual trigger deterministic.
+    result["identities"] = reconcile_buyer_identities(db, tenant)
+    return {"ok": True, "company_code": tenant.company_code, "result": result}
 
 
 @router.get("/tenants/{company_code}/items")

@@ -5,7 +5,11 @@ from app.models.buyer_channel_identity import BuyerChannelIdentity
 from app.models.device import Device
 from app.models.device_pairing_token import DevicePairingToken
 from app.models.erp_allowlist import ERPAllowlistEntry, ERPAllowlistType
+from app.models.erp_contact_customer_link import ERPContactCustomerLink
+from app.models.erp_contact_snapshot import ERPContactSnapshot
+from app.models.erp_crm_sync_state import ERPCRMSyncState
 from app.models.erp_idempotency import ERPIdempotencyEntry
+from app.models.erp_customer_snapshot import ERPCustomerSnapshot
 from app.models.erp_user import ERPUser
 from app.models.firmware import Firmware, DeviceOTALog
 from app.models.license_key import LicenseKey, LicenseKeyStatus
@@ -25,8 +29,12 @@ __all__ = [
     "DevicePairingToken",
     "DeviceOTALog",
     "ERPAllowlistEntry",
+    "ERPContactCustomerLink",
+    "ERPContactSnapshot",
+    "ERPCRMSyncState",
     "ERPAllowlistType",
     "ERPIdempotencyEntry",
+    "ERPCustomerSnapshot",
     "ERPUser",
     "Firmware",
     "LicenseKey",
