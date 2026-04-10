@@ -1894,6 +1894,52 @@ async def update_tenant_config(request: Request, company_code: str, db: Session 
     return redirect_to(f"/admin-ui/tenants/{company_code}")
 
 
+@router.post("/tenants/{company_code}/credentials")
+async def update_tenant_credentials(request: Request, company_code: str, db: Session = Depends(get_db)):
+    redirect_response = require_admin_or_redirect(request)
+    if redirect_response:
+        return redirect_response
+
+    tenant = get_tenant_or_none(db, company_code)
+    if not tenant:
+        set_flash(request, error="Tenant not found")
+        return redirect_to("/admin-ui/tenants")
+
+    form = await request.form()
+    csrf_error = require_csrf(request, form, f"/admin-ui/tenants/{company_code}")
+    if csrf_error:
+        return csrf_error
+
+    erpnext_url_raw = str(form.get("erpnext_url") or "").strip()
+    api_key_raw = str(form.get("api_key") or "").strip()
+    api_secret_raw = str(form.get("api_secret") or "").strip()
+
+    if not erpnext_url_raw and not api_key_raw and not api_secret_raw:
+        set_flash(request, error="Provide at least one field to update")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    new_url = normalize_erpnext_url(erpnext_url_raw) if erpnext_url_raw else tenant.erpnext_url
+    if erpnext_url_raw and not new_url:
+        set_flash(request, error="ERPNext URL is invalid")
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    new_api_key = api_key_raw or tenant.api_key
+    new_api_secret = api_secret_raw or tenant.api_secret
+
+    try:
+        validate_erpnext_credentials(new_url, new_api_key, new_api_secret)
+    except ERPNextValidationError as exc:
+        set_flash(request, error=str(exc))
+        return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+    tenant.erpnext_url = new_url
+    tenant.api_key = new_api_key
+    tenant.api_secret = new_api_secret
+    db.commit()
+    set_flash(request, message="ERP credentials updated")
+    return redirect_to(f"/admin-ui/tenants/{company_code}")
+
+
 @router.post("/tenants/{company_code}/delete")
 async def delete_tenant(request: Request, company_code: str, db: Session = Depends(get_db)):
     redirect_response = require_admin_or_redirect(request)

@@ -25,6 +25,12 @@ class TenantResponse(BaseModel):
     subscription_expires_at: datetime
 
 
+class TenantCredentialsUpdateRequest(BaseModel):
+    erpnext_url: str | None = Field(default=None, min_length=1, max_length=255)
+    api_key: str | None = Field(default=None, min_length=1, max_length=255)
+    api_secret: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 class TenantStatusUpdateRequest(BaseModel):
     status: str
 

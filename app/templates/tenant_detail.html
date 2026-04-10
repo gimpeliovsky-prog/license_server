@@ -29,6 +29,29 @@
 </div>
 
 <div class="panel">
+  <h2>ERP credentials</h2>
+  <p class="muted">Leave a field empty to keep the current value. New credentials will be validated against ERPNext before saving.</p>
+  <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/credentials">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label>ERPNext URL</label>
+      <input type="text" name="erpnext_url" placeholder="{{ tenant.erpnext_url }}" maxlength="255">
+    </div>
+    <div style="margin-top: 8px;">
+      <label>API Key</label>
+      <input type="text" name="api_key" placeholder="leave empty to keep current" maxlength="255" autocomplete="off">
+    </div>
+    <div style="margin-top: 8px;">
+      <label>API Secret</label>
+      <input type="password" name="api_secret" placeholder="leave empty to keep current" maxlength="255" autocomplete="off">
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-block">Update credentials</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
   <h2>Update status</h2>
   <form method="post" action="/admin-ui/tenants/{{ tenant.company_code }}/status" class="inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

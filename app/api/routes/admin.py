@@ -25,6 +25,7 @@ from app.schemas import (
     ProcessJobSummaryResponse,
     SubscriptionUpdateRequest,
     TenantCreateRequest,
+    TenantCredentialsUpdateRequest,
     TenantResponse,
     TenantSystemUpdateRequest,
     TenantStatusUpdateRequest,
@@ -285,6 +286,35 @@ def create_tenant(payload: TenantCreateRequest, db: Session = Depends(get_db)) -
         subscription_expires_at=payload.subscription_expires_at,
     )
     db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return serialize_tenant(tenant)
+
+
+@router.patch("/tenants/{company_code}/credentials", response_model=TenantResponse)
+def update_credentials(
+    company_code: str, payload: TenantCredentialsUpdateRequest, db: Session = Depends(get_db)
+) -> TenantResponse:
+    if not payload.erpnext_url and not payload.api_key and not payload.api_secret:
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
+
+    tenant = get_tenant_or_404(db, company_code)
+
+    new_url = normalize_erpnext_url(payload.erpnext_url) if payload.erpnext_url else tenant.erpnext_url
+    if payload.erpnext_url and not new_url:
+        raise HTTPException(status_code=400, detail="ERPNext URL is required")
+
+    new_api_key = payload.api_key if payload.api_key is not None else tenant.api_key
+    new_api_secret = payload.api_secret if payload.api_secret is not None else tenant.api_secret
+
+    try:
+        validate_erpnext_credentials(new_url, new_api_key, new_api_secret)
+    except ERPNextValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    tenant.erpnext_url = new_url
+    tenant.api_key = new_api_key
+    tenant.api_secret = new_api_secret
     db.commit()
     db.refresh(tenant)
     return serialize_tenant(tenant)
