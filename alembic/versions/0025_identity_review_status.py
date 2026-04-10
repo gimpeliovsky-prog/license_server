@@ -1,6 +1,6 @@
 """identity review cases and recognition status
 
-Revision ID: 0025_identity_review_cases_and_status
+Revision ID: 0025_identity_review_status
 Revises: 0024_erp_crm_identity_sync
 Create Date: 2026-04-09
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "0025_identity_review_cases_and_status"
+revision: str = "0025_identity_review_status"
 down_revision: Union[str, None] = "0024_erp_crm_identity_sync"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

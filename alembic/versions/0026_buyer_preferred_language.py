@@ -1,7 +1,7 @@
 """Add buyer preferred language fields.
 
 Revision ID: 0026_buyer_preferred_language
-Revises: 0025_identity_review_cases_and_status
+Revises: 0025_identity_review_status
 Create Date: 2026-04-10 10:00:00.000000
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "0026_buyer_preferred_language"
-down_revision = "0025_identity_review_cases_and_status"
+down_revision = "0025_identity_review_status"
 branch_labels = None
 depends_on = None
 
