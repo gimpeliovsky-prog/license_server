@@ -430,6 +430,98 @@ def _create_identity_review_case(
     return review_case
 
 
+def _latest_conversation_for_channel(
+    *,
+    db: Session,
+    tenant: Tenant,
+    channel: str,
+    channel_user_id: str,
+) -> AIConversation | None:
+    return (
+        db.query(AIConversation)
+        .filter(
+            AIConversation.tenant_id == tenant.id,
+            AIConversation.channel_type == channel,
+            AIConversation.channel_user_id == channel_user_id,
+        )
+        .order_by(AIConversation.last_message_at.desc(), AIConversation.updated_at.desc())
+        .first()
+    )
+
+
+def _recover_buyer_identity_from_conversation(
+    *,
+    db: Session,
+    tenant: Tenant,
+    channel: str,
+    channel_user_id: str,
+) -> BuyerChannelIdentity | None:
+    conversation = _latest_conversation_for_channel(
+        db=db,
+        tenant=tenant,
+        channel=channel,
+        channel_user_id=channel_user_id,
+    )
+    if not conversation:
+        return None
+
+    source_identity: BuyerChannelIdentity | None = None
+    if conversation.buyer_identity_id:
+        source_identity = (
+            db.query(BuyerChannelIdentity)
+            .filter(
+                BuyerChannelIdentity.tenant_id == tenant.id,
+                BuyerChannelIdentity.id == conversation.buyer_identity_id,
+            )
+            .first()
+        )
+
+    normalized_phone = _normalize_phone(conversation.buyer_phone or (source_identity.phone if source_identity else None))
+    erp_contact_id = source_identity.erp_contact_id if source_identity else None
+    erp_customer_id = source_identity.erp_customer_id if source_identity else conversation.erp_customer_id
+    erp_customer_name = source_identity.erp_customer_name if source_identity else None
+    full_name = source_identity.full_name if source_identity else conversation.buyer_name
+    preferred_language = source_identity.preferred_language if source_identity else None
+    language_source = source_identity.language_source if source_identity else None
+
+    if normalized_phone and (not erp_customer_id or not erp_contact_id):
+        match = resolve_buyer_by_phone(db, tenant, normalized_phone)
+        if match:
+            erp_contact_id = match.get("erp_contact_id") or erp_contact_id
+            erp_customer_id = match.get("erp_customer_id") or erp_customer_id
+            erp_customer_name = match.get("erp_customer_name") or erp_customer_name
+            full_name = match.get("contact_name") or full_name
+
+    if not erp_customer_id:
+        return None
+
+    identity = _upsert_buyer_identity(
+        db=db,
+        tenant=tenant,
+        channel=channel,
+        channel_user_id=channel_user_id,
+        erp_contact_id=erp_contact_id,
+        erp_customer_id=erp_customer_id,
+        erp_customer_name=erp_customer_name,
+        phone=normalized_phone,
+        full_name=full_name,
+        recognition_status=(source_identity.recognition_status if source_identity else None) or "recognized",
+        match_confidence=(source_identity.match_confidence if source_identity else None) or "medium",
+        source="conversation_history",
+        preferred_language=preferred_language,
+        language_source=language_source,
+        needs_review=(source_identity.needs_review if source_identity else False),
+        review_reason=source_identity.review_reason if source_identity else None,
+    )
+    conversation.buyer_identity_id = identity.id
+    conversation.erp_customer_id = erp_customer_id
+    if full_name:
+        conversation.buyer_name = full_name
+    if normalized_phone:
+        conversation.buyer_phone = normalized_phone
+    return identity
+
+
 def _channel_ai_policy(channel: TenantChannel | None, tenant: Tenant) -> dict[str, Any]:
     tenant_config = _safe_json_dict(tenant.tenant_config)
     ai_config = _safe_json_dict(tenant_config.get("ai"))
@@ -780,7 +872,16 @@ def find_buyer_by_telegram(company_code: str, tg_chat_id: str, db: Session = Dep
         .first()
     )
     if not identity:
-        return BuyerLookupResponse(found=False)
+        identity = _recover_buyer_identity_from_conversation(
+            db=db,
+            tenant=tenant,
+            channel="telegram",
+            channel_user_id=tg_chat_id,
+        )
+        if not identity:
+            return BuyerLookupResponse(found=False)
+        db.commit()
+        db.refresh(identity)
     customer_id = identity.erp_customer_id
     customer_name = identity.erp_customer_name or identity.full_name
     contact_id = identity.erp_contact_id
@@ -839,6 +940,16 @@ def resolve_buyer(
         )
         .first()
     )
+    if not identity:
+        identity = _recover_buyer_identity_from_conversation(
+            db=db,
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id,
+        )
+        if identity:
+            db.commit()
+            db.refresh(identity)
     if identity and identity.erp_customer_id:
         return _buyer_lookup_response(
             tenant=tenant,
