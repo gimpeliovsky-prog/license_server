@@ -26,6 +26,8 @@ class BuyerChannelIdentity(Base):
     erp_customer_id: Mapped[str | None] = mapped_column(String(140), nullable=True, index=True)
     erp_customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    preferred_language: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    language_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     recognition_status: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     match_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)

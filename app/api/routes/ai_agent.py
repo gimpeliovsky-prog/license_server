@@ -77,6 +77,8 @@ class BuyerLookupResponse(BaseModel):
     erp_customer_id: str | None = None
     buyer_identity_id: str | None = None
     phone: str | None = None
+    preferred_language: str | None = None
+    language_source: str | None = None
     channel: str | None = None
     recognized_via: str | None = None
     recognition_status: str | None = None
@@ -103,6 +105,11 @@ class ResolveBuyerRequest(BaseModel):
     channel_user_id: str
     phone: str | None = None
     full_name: str | None = None
+
+
+class UpdateBuyerPreferredLanguageRequest(BaseModel):
+    preferred_language: str
+    source: str | None = None
 
 
 class CompanyCandidateResponse(BaseModel):
@@ -208,6 +215,18 @@ def _safe_text(value: Any, *, limit: int = 255) -> str | None:
     return text[:limit]
 
 
+def _normalize_language_code(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if not raw:
+        return None
+    base = raw.split("-", 1)[0]
+    aliases = {"iw": "he", "heb": "he", "eng": "en", "rus": "ru", "ara": "ar"}
+    normalized = aliases.get(base, base)
+    if normalized not in {"en", "ru", "he", "ar"}:
+        return None
+    return normalized
+
+
 def _get_tenant(db: Session, company_code: str) -> Tenant:
     tenant = db.query(Tenant).filter(Tenant.company_code == company_code).first()
     if not tenant:
@@ -269,6 +288,8 @@ def _buyer_lookup_response(
         erp_customer_id=erp_customer_id,
         buyer_identity_id=str(identity.id) if identity else None,
         phone=_normalize_phone(phone or (identity.phone if identity else None)),
+        preferred_language=(identity.preferred_language if identity else None),
+        language_source=(identity.language_source if identity else None),
         channel=channel or (identity.channel if identity else None),
         recognized_via=recognized_via,
         recognition_status=(identity.recognition_status if identity else None),
@@ -295,6 +316,8 @@ def _upsert_buyer_identity(
     recognition_status: str | None = None,
     match_confidence: str | None = None,
     source: str | None = None,
+    preferred_language: str | None = None,
+    language_source: str | None = None,
     needs_review: bool | None = None,
     review_reason: str | None = None,
 ) -> BuyerChannelIdentity:
@@ -329,6 +352,11 @@ def _upsert_buyer_identity(
         identity.match_confidence = match_confidence
     if source:
         identity.source = source
+    normalized_language = _normalize_language_code(preferred_language)
+    if normalized_language:
+        identity.preferred_language = normalized_language
+    if language_source:
+        identity.language_source = _safe_text(language_source, limit=64)
     if needs_review is not None:
         identity.needs_review = bool(needs_review)
     if review_reason is not None:
@@ -855,6 +883,56 @@ def resolve_buyer(
         identity=identity,
         phone=normalized_phone,
         recognized_via="phone_linked_to_channel",
+    )
+
+
+@router.patch("/tenants/{company_code}/buyers/{buyer_identity_id}/preferred-language", response_model=BuyerLookupResponse)
+def update_buyer_preferred_language(
+    company_code: str,
+    buyer_identity_id: str,
+    payload: UpdateBuyerPreferredLanguageRequest,
+    db: Session = Depends(get_db),
+) -> BuyerLookupResponse:
+    tenant = _get_tenant(db, company_code)
+    identity_uuid = _conversation_identity_uuid(buyer_identity_id)
+    if not identity_uuid:
+        raise HTTPException(status_code=400, detail="Invalid buyer_identity_id")
+    identity = (
+        db.query(BuyerChannelIdentity)
+        .filter(BuyerChannelIdentity.tenant_id == tenant.id, BuyerChannelIdentity.id == identity_uuid)
+        .first()
+    )
+    if not identity:
+        raise HTTPException(status_code=404, detail="Buyer identity not found")
+    normalized_language = _normalize_language_code(payload.preferred_language)
+    if not normalized_language:
+        raise HTTPException(status_code=400, detail="Unsupported preferred_language")
+    identity.preferred_language = normalized_language
+    identity.language_source = _safe_text(payload.source, limit=64) or "runtime_detected"
+    identity.last_verified_at = utcnow()
+    db.commit()
+    db.refresh(identity)
+    if not identity.erp_customer_id:
+        return BuyerLookupResponse(
+            found=True,
+            buyer_identity_id=str(identity.id),
+            phone=identity.phone,
+            preferred_language=identity.preferred_language,
+            language_source=identity.language_source,
+            channel=identity.channel,
+            recognition_status=identity.recognition_status,
+            match_confidence=identity.match_confidence,
+            needs_review=bool(identity.needs_review),
+            review_reason=identity.review_reason,
+        )
+    return _buyer_lookup_response(
+        tenant=tenant,
+        erp_contact_id=identity.erp_contact_id,
+        contact_name=identity.full_name,
+        erp_customer_id=identity.erp_customer_id,
+        erp_customer_name=identity.erp_customer_name or identity.full_name,
+        identity=identity,
+        recognized_via="preferred_language_updated",
     )
 
 
