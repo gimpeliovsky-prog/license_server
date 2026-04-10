@@ -145,34 +145,59 @@ def resolve_buyer_by_phone_live(tenant, normalized_phone: str | None) -> dict[st
     if not contacts:
         return None
     contact_name = contacts[0]["name"]
-    link_resp = request_tenant_erpnext(
+    contact_detail_resp = request_tenant_erpnext(
         tenant,
         "GET",
-        "/api/resource/Dynamic Link",
-        params={
-            "filters": json.dumps(
-                [
-                    ["link_doctype", "=", "Customer"],
-                    ["parenttype", "=", "Contact"],
-                    ["parent", "=", contact_name],
-                ]
-            ),
-            "fields": json.dumps(["link_name"]),
-            "limit_page_length": 1,
-        },
+        f"/api/resource/Contact/{quote(str(contact_name or '').strip(), safe='')}",
     )
-    if link_resp.status_code != 200 or not link_resp.json().get("data"):
+    customer_name = None
+    contact_full_name = contacts[0].get("full_name")
+    if contact_detail_resp.status_code == 200:
+        contact_doc = contact_detail_resp.json().get("data", {})
+        if isinstance(contact_doc, dict):
+            links = contact_doc.get("links")
+            if isinstance(links, list):
+                for row in links:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("link_doctype") or "").strip() != "Customer":
+                        continue
+                    customer_name = str(row.get("link_name") or "").strip() or None
+                    if customer_name:
+                        break
+            contact_full_name = contact_doc.get("full_name") or contact_full_name
+
+    if not customer_name:
+        link_resp = request_tenant_erpnext(
+            tenant,
+            "GET",
+            "/api/resource/Dynamic Link",
+            params={
+                "filters": json.dumps(
+                    [
+                        ["link_doctype", "=", "Customer"],
+                        ["parenttype", "=", "Contact"],
+                        ["parent", "=", contact_name],
+                    ]
+                ),
+                "fields": json.dumps(["link_name"]),
+                "limit_page_length": 1,
+            },
+        )
+        if link_resp.status_code == 200 and link_resp.json().get("data"):
+            customer_name = link_resp.json()["data"][0]["link_name"]
+
+    if not customer_name:
         return {
             "erp_contact_id": contact_name,
-            "contact_name": contacts[0].get("full_name"),
+            "contact_name": contact_full_name,
             "erp_customer_id": None,
             "erp_customer_name": None,
         }
-    customer_name = link_resp.json()["data"][0]["link_name"]
     customer = get_customer_detail(tenant, customer_name, fields=json.dumps(["name", "customer_name"]))
     return {
         "erp_contact_id": contact_name,
-        "contact_name": contacts[0].get("full_name"),
+        "contact_name": contact_full_name,
         "erp_customer_id": customer_name,
         "erp_customer_name": (customer or {}).get("customer_name"),
     }
